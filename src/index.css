@@ -1,0 +1,76 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --genius-orange: #EA580C;
+    --genius-orange-hover: #C2410C;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Genius Scan iOS optical scan enhancement filters */
+.scan-filter-magic {
+  filter: contrast(1.18) saturate(1.15) brightness(1.04);
+}
+
+.scan-filter-bw {
+  filter: grayscale(1) contrast(1.85) brightness(1.12);
+}
+
+.scan-filter-whiteboard {
+  filter: contrast(1.38) brightness(1.16) saturate(1.25);
+}
+
+.scan-filter-grayscale {
+  filter: grayscale(1) contrast(1.15) brightness(1.02);
+}
+
+.scan-filter-original {
+  filter: none;
+}
+
+/* Safe area padding for iOS notch / home indicator */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Clean custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

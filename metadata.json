@@ -1,0 +1,6 @@
+{
+  "name": "FileLens Scan",
+  "description": "Mobile-first document scanner, multi-page PDF organizer, OCR search hub, Voice Second Brain, and Smart Cards wallet unified with Genius Scan iOS ergonomics.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
