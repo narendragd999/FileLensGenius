@@ -26,6 +26,8 @@ export type RecurrenceRule = 'none' | 'daily' | 'weekly' | 'monthly';
 
 export type AppTab = 'documents' | 'search' | 'brain' | 'cards' | 'settings';
 
+export type OcrStatus = 'done' | 'pending' | 'running';
+
 export interface NormalizedQuad {
   tlX: number;
   tlY: number;
@@ -83,6 +85,11 @@ export interface DocumentPage {
   signatures: PlacedSignature[];
 }
 
+export interface IndexedChunk {
+  pageIndex: number;
+  text: string;
+}
+
 export interface ScanDocument {
   id: string;
   title: string;
@@ -101,6 +108,88 @@ export interface ScanDocument {
   watermark?: WatermarkConfig | null;
   sizeBytes: number;
   searchableOcr: boolean;
+  // Smart Indexing fields (ported from FileLensMobile FileEntity & DocumentIndexer)
+  fileFingerprint?: string;
+  contentHash?: string;
+  sourcePath?: string;
+  fileExtension?: string;
+  mimeType?: string;
+  fileCategory?: FileCategory;
+  ocrStatus?: OcrStatus;
+  indexedAt?: string;
+  chunksCount?: number;
+}
+
+export type FileCategory =
+  | 'pdf'
+  | 'image'
+  | 'office'
+  | 'text_code'
+  | 'audio_video'
+  | 'archive'
+  | 'other';
+
+export interface IndexProgress {
+  indexed: number;
+  total: number;
+  currentFile: string;
+  phase:
+    | 'Discovering Device Folders'
+    | 'Scanning'
+    | 'Extracting Text & OCR'
+    | 'Building Semantic Index'
+    | 'Smart Taxonomy';
+  skippedUnchanged: number;
+  newOrUpdated: number;
+  foldersScanned?: number;
+}
+
+export type DeviceRootPreset = 'documents' | 'downloads' | 'pictures' | 'desktop' | 'custom';
+
+export interface DeviceStorageRoot {
+  id: string;
+  name: string;
+  preset: DeviceRootPreset;
+  linkedAtIso: string;
+  lastSyncedIso?: string;
+  lastFileCount: number;
+  foldersScanned: number;
+  hasPersistentHandle: boolean;
+}
+
+export interface DeviceIndexFilters {
+  includePdf: boolean;
+  includeImages: boolean;
+  includeOfficeDocs: boolean;
+  includeTextDocs: boolean;
+  includeMediaAndArchives: boolean;
+  includeAllOtherFiles: boolean;
+  skipSystemFolders: boolean;
+  maxFilesPerRun: number;
+}
+
+export interface DeviceIndexSummary {
+  newOrUpdated: number;
+  skippedUnchanged: number;
+  totalScanned: number;
+  elapsedMs: number;
+  wasCancelled?: boolean;
+  timestampIso: string;
+  sourceLabel: string;
+}
+
+export interface IndexStats {
+  totalFiles: number;
+  ocrDone: number;
+  ocrPending: number;
+  totalChunks: number;
+  cardsCount: number;
+}
+
+export interface SemanticDuplicateGroup {
+  groupId: string;
+  similarity: number;
+  documents: ScanDocument[];
 }
 
 export interface DocFolder {

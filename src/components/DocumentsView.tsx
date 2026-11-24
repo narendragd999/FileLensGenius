@@ -19,19 +19,35 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { DocFolder, FULL_QUAD, ScanDocument, ScanMode } from '../types/filelens';
+import {
+  DeviceIndexSummary,
+  DocFolder,
+  IndexProgress,
+  IndexStats,
+  ScanDocument,
+  ScanMode,
+} from '../types/filelens';
 import { formatBytes, formatShortDate } from '../utils/formatters';
 import { exportDocumentAsPdf } from '../utils/pdfExport';
 import { PageCanvasPreview } from './PageCanvasPreview';
+import { SmartIndexingBar } from './SmartIndexingBar';
 
 interface DocumentsViewProps {
   documents: ScanDocument[];
   folders: DocFolder[];
   selectedFolderId: string;
+  indexStats: IndexStats;
+  linkedDeviceRootsCount: number;
+  isIndexing: boolean;
+  indexProgress: IndexProgress | null;
+  lastIndexSummary: DeviceIndexSummary | null;
+  onOpenDeviceIndexer: () => void;
+  onIndexFiles: (files: File[], sourceLabel: string) => void;
+  onRunDeltaReindex: () => void;
+  onCancelIndexing: () => void;
   onSelectFolder: (folderId: string) => void;
   onCreateFolder: (name: string) => void;
   onOpenScanner: (mode: ScanMode) => void;
-  onImportFilesAsDocument: (files: FileList) => void;
   onOpenViewer: (docId: string) => void;
   onOpenOrganizer: (docId: string) => void;
   onToggleBookmark: (docId: string) => void;
@@ -48,10 +64,18 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   documents,
   folders,
   selectedFolderId,
+  indexStats,
+  linkedDeviceRootsCount,
+  isIndexing,
+  indexProgress,
+  lastIndexSummary,
+  onOpenDeviceIndexer,
+  onIndexFiles,
+  onRunDeltaReindex,
+  onCancelIndexing,
   onSelectFolder,
   onCreateFolder,
   onOpenScanner,
-  onImportFilesAsDocument,
   onOpenViewer,
   onOpenOrganizer,
   onToggleBookmark,
@@ -153,7 +177,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           </p>
         </div>
 
-        {/* Primary Capture & Utility Strip */}
+        {/* Primary Capture & Smart Index Strip */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
@@ -161,7 +185,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold flex items-center gap-2 transition-colors whitespace-nowrap"
           >
             <Camera className="w-4 h-4" />
-            <span>Scan Document</span>
+            <span>Live Scan</span>
           </button>
           <button
             type="button"
@@ -177,17 +201,16 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             className="min-h-[42px] px-3.5 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-slate-800 dark:text-slate-100 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
           >
             <Upload className="w-4 h-4 text-orange-600 dark:text-orange-400" />
-            <span>Import Photos</span>
+            <span>Import Any File</span>
           </button>
           <input
             ref={importInputRef}
             type="file"
-            accept="image/*"
             multiple
             className="hidden"
             onChange={(e) => {
               if (e.target.files && e.target.files.length > 0) {
-                onImportFilesAsDocument(e.target.files);
+                onIndexFiles(Array.from(e.target.files), `Imported (${e.target.files.length} files)`);
                 e.target.value = '';
               }
             }}
@@ -195,7 +218,21 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       </div>
 
-      {/* Folder Rail (Mobile Horizontal Scroll, synced with Desktop Sidebar) */}
+      {/* Compact Universal Smart Indexing Panel directly on Documents Home */}
+      <SmartIndexingBar
+        compact
+        stats={indexStats}
+        linkedDeviceRootsCount={linkedDeviceRootsCount}
+        isIndexing={isIndexing}
+        progress={indexProgress}
+        lastSummary={lastIndexSummary}
+        onOpenDeviceIndexer={onOpenDeviceIndexer}
+        onIndexFiles={onIndexFiles}
+        onRunDeltaReindex={onRunDeltaReindex}
+        onCancelIndexing={onCancelIndexing}
+      />
+
+      {/* Folder Rail */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
         <button
           type="button"
@@ -253,7 +290,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             type="text"
             value={filterQuery}
             onChange={(e) => setFilterQuery(e.target.value)}
-            placeholder="Filter documents by title, tag, or OCR text…"
+            placeholder="Filter documents by title, tag, or indexed OCR text…"
             className="w-full h-11 pl-10 pr-9 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
           {filterQuery && (
@@ -394,7 +431,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       )}
 
-      {/* Documents Empty State */}
+      {/* Documents List / Grid */}
       {filteredDocs.length === 0 ? (
         <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl border border-slate-200/80 dark:border-white/10 p-10 text-center space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 flex items-center justify-center mx-auto">
@@ -402,7 +439,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           </div>
           <h3 className="text-base font-bold">No matching scans found</h3>
           <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-            Capture a crisp multi-page PDF with auto edge detection, or clear your current folder and tag filters.
+            Capture a crisp multi-page PDF with live edge detection, index a local folder, or reset your current filters.
           </p>
           <div className="pt-2 flex items-center justify-center gap-2">
             <button
@@ -428,7 +465,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           </div>
         </div>
       ) : viewMode === 'list' ? (
-        /* Genius Scan iOS Grouped List Layout */
         <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8 overflow-hidden">
           {filteredDocs.map((doc) => {
             const isSelected = selectedDocIds.has(doc.id);
@@ -458,7 +494,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   </span>
                 )}
 
-                {/* Paper Stack Thumbnail */}
                 <div className="relative w-12 h-16 shrink-0">
                   {doc.pages.length > 1 && (
                     <div className="absolute -right-1 -top-1 w-full h-full rounded-md bg-slate-200 dark:bg-slate-700 border border-slate-300/60 dark:border-white/10" />
@@ -474,7 +509,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   </div>
                 </div>
 
-                {/* Document Title & Clean Unboxed Metadata */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <h3 className="text-sm sm:text-[15px] font-semibold text-slate-900 dark:text-white truncate">
@@ -485,7 +519,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                     )}
                   </div>
 
-                  {/* Clean unboxed typographic metadata (no pill badges) */}
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
                     <span className="font-mono tabular-nums font-medium text-slate-700 dark:text-slate-300">
                       {doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'}
@@ -507,7 +540,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   </div>
                 </div>
 
-                {/* Row Actions (Organize Pages, Bookmark, More) */}
                 {!selectMode && (
                   <div
                     className="flex items-center gap-1 shrink-0"
@@ -550,7 +582,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           })}
         </div>
       ) : (
-        /* Genius Scan iOS Document Grid View */
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
           {filteredDocs.map((doc) => {
             const isSelected = selectedDocIds.has(doc.id);
@@ -710,7 +741,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       )}
 
-      {/* Document Action Sheet (Rename, Folder, Organize, Export, Delete) */}
+      {/* Document Action Sheet */}
       {actionSheetDoc && (
         <div
           className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"

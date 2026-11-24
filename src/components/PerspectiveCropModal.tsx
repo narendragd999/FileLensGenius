@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { DocumentPage, FULL_QUAD, NormalizedQuad, ScanFilterId } from '../types/filelens';
 import { SCAN_FILTERS } from '../data/seedData';
+import { detectQuadFromImageUrl } from '../utils/documentEdgeDetector';
 
 interface PerspectiveCropModalProps {
   page: DocumentPage;
@@ -32,6 +33,7 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
   const [contrast, setContrast] = useState<number>(page.contrast ?? 1);
   const [activeTab, setActiveTab] = useState<'crop' | 'filter' | 'adjust'>('crop');
   const [draggingCorner, setDraggingCorner] = useState<CornerKey | null>(null);
+  const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -48,17 +50,23 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
     });
   };
 
-  const autoDetectEdges = () => {
-    setQuad({
-      tlX: 0.05,
-      tlY: 0.04,
-      trX: 0.95,
-      trY: 0.04,
-      brX: 0.95,
-      brY: 0.96,
-      blX: 0.05,
-      blY: 0.96,
-    });
+  const autoDetectEdges = async () => {
+    setIsDetecting(true);
+    try {
+      const detected = await detectQuadFromImageUrl(page.imageUrl);
+      const isFull =
+        detected.tlX <= 0.01 &&
+        detected.tlY <= 0.01 &&
+        detected.trX >= 0.99 &&
+        detected.brY >= 0.99;
+      setQuad(
+        isFull
+          ? { tlX: 0.04, tlY: 0.04, trX: 0.96, trY: 0.04, brX: 0.96, brY: 0.96, blX: 0.04, blY: 0.96 }
+          : detected
+      );
+    } finally {
+      setIsDetecting(false);
+    }
   };
 
   const resetFullFrame = () => setQuad(FULL_QUAD);
@@ -199,10 +207,11 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
           <div className="flex items-center justify-center gap-3 flex-wrap">
             <button
               onClick={autoDetectEdges}
-              className="min-h-[40px] px-4 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              disabled={isDetecting}
+              className="min-h-[40px] px-4 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
               <Sparkles className="w-4 h-4 text-orange-400" />
-              <span>Auto Edges</span>
+              <span>{isDetecting ? 'Detecting…' : 'Auto Edges'}</span>
             </button>
             <button
               onClick={resetFullFrame}

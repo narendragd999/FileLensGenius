@@ -1,14 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Camera,
   Check,
   Crop,
   Grid3X3,
   Image as ImageIcon,
+  Loader2,
   Lock,
+  RefreshCw,
   RotateCw,
   Sliders,
   Sparkles,
+  SwitchCamera,
   Trash2,
   X,
   Zap,
@@ -20,6 +23,7 @@ import {
   DocFolder,
   DocumentPage,
   FULL_QUAD,
+  NormalizedQuad,
   PdfPageSizePreset,
   PdfQualityPreset,
   ScanDocument,
@@ -28,13 +32,26 @@ import {
   SmartCardCategory,
 } from '../types/filelens';
 import {
-  ASSET_IMAGES,
   NAMING_TEMPLATES,
   SCAN_FILTERS,
   SMART_CARD_CATEGORIES,
 } from '../data/seedData';
 import { resolveNamingTemplate } from '../utils/formatters';
 import { composeTwoInOneA4IdCard } from '../utils/pdfExport';
+import {
+  analyzeCanvasFrame,
+  computeFingerprintDelta,
+  computeQuadDelta,
+  detectQuadFromImageUrl,
+} from '../utils/documentEdgeDetector';
+import { runRealOcrOnImage } from '../utils/smartIndexer';
+import {
+  detectSmartTags,
+  extractExpiryDateIso,
+  getCardSmartCategory,
+  suggestFolderId,
+  suggestSmartDocumentTitle,
+} from '../utils/smartTaxonomy';
 import { PageCanvasPreview } from './PageCanvasPreview';
 import { PerspectiveCropModal } from './PerspectiveCropModal';
 
@@ -49,34 +66,6 @@ interface LiveScannerModalProps {
   onClose: () => void;
   onToast: (message: string) => void;
 }
-
-const DEMO_CAPTURE_SAMPLES = [
-  {
-    url: ASSET_IMAGES.contract,
-    label: 'Service Agreement',
-    ocr: 'SERVICE AGREEMENT. Between Apex Solutions Inc. and Quantum Dynamics LLC. Fees & Payment $15,000. Signed Jonathan Chen.',
-  },
-  {
-    url: ASSET_IMAGES.invoice,
-    label: 'Studio Invoice',
-    ocr: 'NOVA DESIGN STUDIO INVOICE #NDS-1089. Total Due $13,504.19 USD. PAID.',
-  },
-  {
-    url: ASSET_IMAGES.medical,
-    label: 'Clinic Lab Report',
-    ocr: 'CITYWAY WELLNESS CLINIC PATIENT LAB REPORT. Complete Blood Count, Metabolic Panel, Lipid Panel.',
-  },
-  {
-    url: ASSET_IMAGES.whiteboard,
-    label: 'Architecture Whiteboard',
-    ocr: 'PRODUCT ARCHITECTURE FLOW. API Gateway, Microservices, Q4 2024 Timeline.',
-  },
-  {
-    url: ASSET_IMAGES.idCard,
-    label: 'Identification Card',
-    ocr: 'SPECIMEN IDENTIFICATION CARD. Member ID 123456789. Alexa R. Chen. Membership Pass.',
-  },
-];
 
 export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   initialMode,
@@ -96,11 +85,25 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const [batchPace, setBatchPace] = useState<BatchAutoPace>(preferences.batchPace);
   const [flashOn, setFlashOn] = useState<boolean>(false);
   const [showGrid, setShowGrid] = useState<boolean>(true);
-  const [cameraActive, setCameraActive] = useState<boolean>(false);
-  const [demoSampleIdx, setDemoSampleIdx] = useState<number>(initialMode === 'idcard' ? 4 : 0);
+
+  // Real WebRTC camera states (zero dummy captures!)
+  const [cameraStatus, setCameraStatus] = useState<'initializing' | 'live' | 'denied' | 'unavailable'>(
+    'initializing'
+  );
+  const [cameraErrorMsg, setCameraErrorMsg] = useState<string>('');
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [cameraRetryKey, setCameraRetryKey] = useState<number>(0);
+
+  // Real-time edge detection & Anti-Duplicate Smart Page-Change Gate state
+  const [detectedQuad, setDetectedQuad] = useState<NormalizedQuad | null>(null);
+  const [edgeConfidence, setEdgeConfidence] = useState<number>(0);
+  const [stabilityProgress, setStabilityProgress] = useState<number>(0); // 0..1
+  const [waitingPageSwap, setWaitingPageSwap] = useState<boolean>(false);
   const [shutterFlash, setShutterFlash] = useState<boolean>(false);
-  const [quadConfidence, setQuadConfidence] = useState<'searching' | 'locked'>('locked');
   const [capturedPages, setCapturedPages] = useState<DocumentPage[]>([]);
+  const [ocrInFlightCount, setOcrInFlightCount] = useState<number>(0);
 
   // Review & Save state
   const [docTitle, setDocTitle] = useState<string>(() =>
@@ -108,6 +111,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       ? resolveNamingTemplate('ID_Card_{YYYY}-{MM}-{DD}', nextSequenceNumber)
       : resolveNamingTemplate(preferences.namingTemplate, nextSequenceNumber)
   );
+  const [isSmartNaming, setIsSmartNaming] = useState<boolean>(false);
   const [folderId, setFolderId] = useState<string>(initialMode === 'idcard' ? 'ids' : 'inbox');
   const [activeFilter, setActiveFilter] = useState<ScanFilterId>(preferences.defaultFilter);
   const [pageSizePreset, setPageSizePreset] = useState<PdfPageSizePreset>(preferences.defaultPageSize);
@@ -122,136 +126,409 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const analysisCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const nativeCameraInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Attempt live camera access gracefully
+  // Refs for real-time edge stability & anti-duplicate fingerprint gate
+  const lastQuadRef = useRef<NormalizedQuad | null>(null);
+  const stableFramesRef = useRef<number>(0);
+  const lastCapturedFpRef = useRef<Float32Array | null>(null);
+  const latestFpRef = useRef<Float32Array | null>(null);
+  const waitingPageSwapRef = useRef<boolean>(false);
+  const lastAutoShotMsRef = useRef<number>(0);
+  const captureLockRef = useRef<boolean>(false);
+
+  // Stop any active camera tracks safely
+  const stopCameraTracks = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, []);
+
+  // Initialize REAL live WebRTC camera (tries rear camera first, then falls back to any available webcam!)
   useEffect(() => {
-    if (phase !== 'camera') return;
-    let cancelled = false;
+    if (phase !== 'camera') {
+      stopCameraTracks();
+      return;
+    }
 
-    async function initCamera() {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setCameraActive(false);
+    let cancelled = false;
+    setCameraStatus('initializing');
+    setCameraErrorMsg('');
+
+    async function startLiveCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (!cancelled) {
+          setCameraStatus('unavailable');
+          setCameraErrorMsg('This browser context does not expose live camera streaming.');
+        }
         return;
       }
+
+      const constraintsToTry: MediaStreamConstraints[] = selectedDeviceId
+        ? [{ video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }]
+        : [
+            { video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+            { video: { facingMode: { ideal: facingMode } }, audio: false },
+            { video: true, audio: false },
+          ];
+
+      let stream: MediaStream | null = null;
+      let lastError: unknown = null;
+
+      for (const constraints of constraintsToTry) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          if (stream) break;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+
+      if (cancelled) {
+        stream?.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      if (!stream) {
+        const errName = (lastError as { name?: string })?.name ?? '';
+        if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+          setCameraStatus('denied');
+          setCameraErrorMsg('Camera permission was blocked. Allow camera access in your browser bar or use System Camera / Photos.');
+        } else {
+          setCameraStatus('unavailable');
+          setCameraErrorMsg('No active camera stream detected on this device. Connect a camera or use System Camera / Photos.');
+        }
+        return;
+      }
+
+      streamRef.current = stream;
+
+      // Enumerate all video input devices so user can switch lenses
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => {});
-        }
-        setCameraActive(true);
+        const allDevices = await navigator.mediaDevices.enumerateDevices();
+        const cams = allDevices.filter((d) => d.kind === 'videoinput');
+        if (!cancelled) setVideoDevices(cams);
       } catch {
-        setCameraActive(false);
+        // Ignore enumerate errors
+      }
+
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        video.setAttribute('playsinline', 'true');
+        video.muted = true;
+        try {
+          await video.play();
+        } catch {
+          // Wait for loadedmetadata fallback
+        }
+      }
+
+      if (!cancelled) {
+        setCameraStatus('live');
       }
     }
 
-    initCamera();
+    startLiveCamera();
     return () => {
       cancelled = true;
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
+      stopCameraTracks();
     };
-  }, [phase]);
+  }, [phase, facingMode, selectedDeviceId, cameraRetryKey, stopCameraTracks]);
 
-  // Subtle realistic document edge tracking pulse
+  // Apply Torch / Flash constraint if supported by mobile rear camera hardware
   useEffect(() => {
-    if (phase !== 'camera') return;
-    const timer = window.setInterval(() => {
-      setQuadConfidence((prev) => (prev === 'locked' ? 'locked' : 'locked'));
-    }, 2400);
-    return () => window.clearInterval(timer);
-  }, [phase]);
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    if (!track) return;
+    const caps = (track.getCapabilities?.() as { torch?: boolean } | undefined) ?? {};
+    if (caps.torch) {
+      track
+        .applyConstraints({
+          advanced: [{ torch: flashOn } as MediaTrackConstraintSet],
+        })
+        .catch(() => {});
+    }
+  }, [flashOn, cameraStatus]);
 
-  const triggerCapture = () => {
-    setShutterFlash(true);
-    setTimeout(() => setShutterFlash(false), 160);
+  // Background real OCR enrichment for a newly captured page
+  const enrichPageWithRealOcr = useCallback(
+    (pageId: string, imageUrl: string) => {
+      if (!searchableOcr) return;
+      setOcrInFlightCount((c) => c + 1);
+      runRealOcrOnImage(imageUrl)
+        .then((extractedText) => {
+          if (!extractedText) return;
+          setCapturedPages((prev) =>
+            prev.map((p) => (p.id === pageId ? { ...p, ocrText: extractedText } : p))
+          );
+          const smartTags = detectSmartTags('', extractedText);
+          if (smartTags.length > 0) {
+            setTagInput((prev) => {
+              const existing = prev
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean);
+              return Array.from(new Set([...existing, ...smartTags])).join(', ');
+            });
+          }
+          const inferredFolder = suggestFolderId('', extractedText);
+          if (inferredFolder !== 'inbox') {
+            setFolderId(inferredFolder);
+          }
+        })
+        .finally(() => {
+          setOcrInFlightCount((c) => Math.max(0, c - 1));
+        });
+    },
+    [searchableOcr]
+  );
 
-    let capturedUrl = DEMO_CAPTURE_SAMPLES[demoSampleIdx].url;
-    let capturedOcr = DEMO_CAPTURE_SAMPLES[demoSampleIdx].ocr;
-
-    if (cameraActive && videoRef.current && videoRef.current.videoWidth > 0) {
-      const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0);
-        capturedUrl = canvas.toDataURL('image/jpeg', 0.9);
-        capturedOcr = `Captured live camera scan on ${new Date().toLocaleDateString()} via FileLens Scanner.`;
+  // REAL Live Frame Capture directly from <video> hardware stream!
+  const captureLiveVideoFrame = useCallback(
+    (quadOverride?: NormalizedQuad | null) => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
+        onToast('Camera feed is still starting — hold on a moment');
+        return;
       }
-    } else {
-      // Advance demo desk page automatically so batch scans capture distinct sheets
-      setDemoSampleIdx((i) => (i + 1) % DEMO_CAPTURE_SAMPLES.length);
+      if (captureLockRef.current) return;
+      captureLockRef.current = true;
+
+      setShutterFlash(true);
+      setTimeout(() => setShutterFlash(false), 140);
+
+      // Capture full native video resolution (up to 2048px wide)
+      const maxDim = 2048;
+      const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+      const outW = Math.round(video.videoWidth * scale);
+      const outH = Math.round(video.videoHeight * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        captureLockRef.current = false;
+        return;
+      }
+
+      ctx.drawImage(video, 0, 0, outW, outH);
+      const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
+      // Snapshot visual 8x8 luma fingerprint so Auto-Capture never duplicates the same page!
+      lastCapturedFpRef.current = latestFpRef.current ? new Float32Array(latestFpRef.current) : null;
+      lastAutoShotMsRef.current = Date.now();
+      stableFramesRef.current = 0;
+      setStabilityProgress(0);
+
+      const shouldGateSwap =
+        scanMode !== 'single' && (batchPace === 'wait_page' || scanMode === 'idcard');
+      waitingPageSwapRef.current = shouldGateSwap;
+      setWaitingPageSwap(shouldGateSwap);
+
+      const pageId = `pg-live-${Date.now()}`;
+      const effectiveQuad =
+        quadOverride ??
+        detectedQuad ??
+        (scanMode === 'idcard'
+          ? { tlX: 0.08, tlY: 0.25, trX: 0.92, trY: 0.25, brX: 0.92, brY: 0.75, blX: 0.08, blY: 0.75 }
+          : FULL_QUAD);
+
+      const newPage: DocumentPage = {
+        id: pageId,
+        imageUrl: capturedDataUrl,
+        rotation: 0,
+        filter: activeFilter,
+        quad: effectiveQuad,
+        brightness: 1,
+        contrast: 1,
+        ocrText: '',
+        signatures: [],
+      };
+
+      setCapturedPages((prev) => {
+        const next = scanMode === 'single' ? [newPage] : [...prev, newPage];
+        if (scanMode === 'single') {
+          setTimeout(() => setPhase('review'), 160);
+        } else if (scanMode === 'idcard' && next.length >= 2) {
+          onToast('Captured Front & Back · Ready for 2-in-1 A4 ID composite');
+          setTimeout(() => setPhase('review'), 200);
+        } else {
+          onToast(`Captured live Page ${next.length} · Extracting OCR…`);
+        }
+        return next;
+      });
+
+      enrichPageWithRealOcr(pageId, capturedDataUrl);
+
+      setTimeout(() => {
+        captureLockRef.current = false;
+      }, 450);
+    },
+    [activeFilter, batchPace, detectedQuad, enrichPageWithRealOcr, onToast, scanMode]
+  );
+
+  // Real-time Live Document Edge Tracking & Smart Anti-Duplicate Auto-Capture Loop (~160ms interval)
+  useEffect(() => {
+    if (phase !== 'camera' || cameraStatus !== 'live') {
+      setDetectedQuad(null);
+      setEdgeConfidence(0);
+      setStabilityProgress(0);
+      return;
     }
 
-    const newPage: DocumentPage = {
-      id: `pg-scan-${Date.now()}-${capturedPages.length}`,
-      imageUrl: capturedUrl,
-      rotation: 0,
-      filter: activeFilter,
-      quad: FULL_QUAD,
-      brightness: 1,
-      contrast: 1,
-      ocrText: capturedOcr,
-      signatures: [],
-    };
+    if (!analysisCanvasRef.current) {
+      analysisCanvasRef.current = document.createElement('canvas');
+      analysisCanvasRef.current.width = 128;
+      analysisCanvasRef.current.height = 170;
+    }
 
-    const nextPages = scanMode === 'single' ? [newPage] : [...capturedPages, newPage];
-    setCapturedPages(nextPages);
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      const canvas = analysisCanvasRef.current;
+      if (!video || !canvas || video.readyState < 2 || video.videoWidth === 0) return;
 
-    if (scanMode === 'single') {
-      setPhase('review');
-    } else if (scanMode === 'idcard' && nextPages.length >= 2) {
-      onToast('Captured Front & Back · Ready for 2-in-1 A4 composite');
-      setPhase('review');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const analysis = analyzeCanvasFrame(canvas);
+      latestFpRef.current = analysis.fingerprint;
+
+      // Anti-Duplicate Smart Page-Change Gate (ported from LiveDocumentCameraView.kt)
+      if (waitingPageSwapRef.current && lastCapturedFpRef.current) {
+        const visualDelta = computeFingerprintDelta(analysis.fingerprint, lastCapturedFpRef.current);
+        if (visualDelta >= 0.085) {
+          waitingPageSwapRef.current = false;
+          setWaitingPageSwap(false);
+          stableFramesRef.current = 0;
+        }
+      }
+
+      if (analysis.quad && analysis.confidence >= 0.52) {
+        const prev = lastQuadRef.current;
+        const smoothed: NormalizedQuad = prev
+          ? {
+              tlX: prev.tlX * 0.55 + analysis.quad.tlX * 0.45,
+              tlY: prev.tlY * 0.55 + analysis.quad.tlY * 0.45,
+              trX: prev.trX * 0.55 + analysis.quad.trX * 0.45,
+              trY: prev.trY * 0.55 + analysis.quad.trY * 0.45,
+              brX: prev.brX * 0.55 + analysis.quad.brX * 0.45,
+              brY: prev.brY * 0.55 + analysis.quad.brY * 0.45,
+              blX: prev.blX * 0.55 + analysis.quad.blX * 0.45,
+              blY: prev.blY * 0.55 + analysis.quad.blY * 0.45,
+            }
+          : analysis.quad;
+
+        const delta = computeQuadDelta(prev, smoothed);
+        lastQuadRef.current = smoothed;
+        setDetectedQuad(smoothed);
+        setEdgeConfidence(analysis.confidence);
+
+        const cooldownMs =
+          batchPace === 'delay_5s' ? 5000 : batchPace === 'delay_3s' ? 3000 : 1800;
+        const cooldownElapsed = Date.now() - lastAutoShotMsRef.current >= cooldownMs;
+
+        if (autoCapture && !waitingPageSwapRef.current && cooldownElapsed && delta < 0.032) {
+          stableFramesRef.current += 1;
+          const progress = Math.min(1, stableFramesRef.current / 7);
+          setStabilityProgress(progress);
+          if (stableFramesRef.current >= 7) {
+            captureLiveVideoFrame(smoothed);
+          }
+        } else {
+          stableFramesRef.current = Math.max(0, stableFramesRef.current - 1);
+          setStabilityProgress(Math.min(1, stableFramesRef.current / 7));
+        }
+      } else {
+        stableFramesRef.current = 0;
+        setStabilityProgress(0);
+        setDetectedQuad(null);
+        setEdgeConfidence(0);
+        lastQuadRef.current = null;
+      }
+    }, 160);
+
+    return () => window.clearInterval(timer);
+  }, [autoCapture, batchPace, cameraStatus, captureLiveVideoFrame, phase]);
+
+  const handleSwitchCamera = () => {
+    if (videoDevices.length > 1) {
+      const currentIdx = videoDevices.findIndex((d) => d.deviceId === selectedDeviceId);
+      const next = videoDevices[(currentIdx + 1) % videoDevices.length];
+      setSelectedDeviceId(next.deviceId);
     } else {
-      onToast(`Captured Page ${nextPages.length}`);
+      setSelectedDeviceId(null);
+      setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'));
     }
   };
 
-  const handleGalleryUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Real Photo / Native Mobile Camera Capture Handler
+  const handleFileCaptureOrImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const promises = Array.from(files).map(
-      (file, idx) =>
-        new Promise<DocumentPage>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            resolve({
-              id: `pg-upload-${Date.now()}-${idx}`,
-              imageUrl: String(reader.result),
-              rotation: 0,
-              filter: activeFilter,
-              quad: FULL_QUAD,
-              brightness: 1,
-              contrast: 1,
-              ocrText: `Imported document image "${file.name}" scanned with FileLens.`,
-              signatures: [],
-            });
-          };
-          reader.readAsDataURL(file);
-        })
+    const loadedPages = await Promise.all(
+      Array.from(files).map(
+        (file, idx) =>
+          new Promise<DocumentPage>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = async () => {
+              const dataUrl = String(reader.result);
+              const detected = await detectQuadFromImageUrl(dataUrl);
+              resolve({
+                id: `pg-file-${Date.now()}-${idx}`,
+                imageUrl: dataUrl,
+                rotation: 0,
+                filter: activeFilter,
+                quad: detected,
+                brightness: 1,
+                contrast: 1,
+                ocrText: '',
+                signatures: [],
+              });
+            };
+            reader.readAsDataURL(file);
+          })
+      )
     );
 
-    Promise.all(promises).then((pages) => {
-      const next = scanMode === 'single' ? [pages[0]] : [...capturedPages, ...pages];
-      setCapturedPages(next);
-      setPhase('review');
-      onToast(`Imported ${pages.length} photo${pages.length > 1 ? 's' : ''}`);
-    });
+    const next = scanMode === 'single' ? [loadedPages[0]] : [...capturedPages, ...loadedPages];
+    setCapturedPages(next);
+    setPhase('review');
+    onToast(`Added ${loadedPages.length} real photo${loadedPages.length > 1 ? 's' : ''} · Running OCR & edge detection…`);
+
+    loadedPages.forEach((pg) => enrichPageWithRealOcr(pg.id, pg.imageUrl));
     e.target.value = '';
+  };
+
+  const handleSmartTitleSuggestion = async () => {
+    if (capturedPages.length === 0) return;
+    setIsSmartNaming(true);
+    try {
+      let text = capturedPages.map((p) => p.ocrText).join('\n').trim();
+      if (text.length < 10) {
+        text = await runRealOcrOnImage(capturedPages[0].imageUrl);
+        if (text) {
+          setCapturedPages((prev) =>
+            prev.map((p, idx) => (idx === 0 ? { ...p, ocrText: text } : p))
+          );
+        }
+      }
+      const suggested = suggestSmartDocumentTitle(text, scanMode === 'idcard' ? 'ID_Card' : 'Scan');
+      setDocTitle(suggested);
+      const tags = detectSmartTags(suggested, text);
+      if (tags.length > 0) setTagInput(tags.join(', '));
+      onToast(`Smart title: ${suggested}`);
+    } finally {
+      setIsSmartNaming(false);
+    }
   };
 
   const handleApplyGlobalFilter = (filterId: ScanFilterId) => {
@@ -280,7 +557,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             quad: FULL_QUAD,
             brightness: 1,
             contrast: 1,
-            ocrText: `${capturedPages[0].ocrText}\n${capturedPages[1].ocrText}`,
+            ocrText: `${capturedPages[0].ocrText}\n${capturedPages[1].ocrText}`.trim(),
             signatures: [],
           },
         ];
@@ -291,10 +568,17 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         return;
       }
 
-      const tags = tagInput
+      const combinedOcr = finalPages.map((p) => p.ocrText).join('\n').trim();
+      const autoTags = detectSmartTags(docTitle, combinedOcr);
+      const userTags = tagInput
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean);
+      const tags = Array.from(new Set([...userTags, ...autoTags]));
+      const expiryDate = extractExpiryDateIso(combinedOcr);
+      const resolvedCardCategory = saveAsSmartCard
+        ? cardCategory
+        : getCardSmartCategory(docTitle, tags, combinedOcr);
 
       const newDoc: ScanDocument = {
         id: `doc-scan-${Date.now()}`,
@@ -306,12 +590,19 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         pages: finalPages,
         isBookmarked: false,
         isSmartCard: saveAsSmartCard,
-        cardCategory: saveAsSmartCard ? cardCategory : undefined,
+        cardCategory: saveAsSmartCard ? resolvedCardCategory : undefined,
+        expiryDate,
         passwordProtected: passwordProtect,
         pageSizePreset,
         qualityPreset,
-        sizeBytes: Math.round(finalPages.length * (qualityPreset === 'high' ? 620_000 : qualityPreset === 'compact' ? 210_000 : 390_000)),
+        sizeBytes: Math.round(
+          finalPages.length *
+            (qualityPreset === 'high' ? 620_000 : qualityPreset === 'compact' ? 210_000 : 390_000)
+        ),
         searchableOcr,
+        ocrStatus: combinedOcr.length > 0 ? 'done' : 'pending',
+        indexedAt: new Date().toISOString(),
+        chunksCount: Math.max(1, finalPages.length),
       };
       onCompleteNewDocument(newDoc);
     } finally {
@@ -329,17 +620,20 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     batchPace === 'wait_page' ? 'Wait Page' : batchPace === 'delay_3s' ? '3s Auto' : '5s Auto';
 
   if (phase === 'camera') {
-    const activeDemo = DEMO_CAPTURE_SAMPLES[demoSampleIdx];
+    const q = detectedQuad;
+    const quadPolyPoints = q
+      ? `${q.tlX * 100},${q.tlY * 100} ${q.trX * 100},${q.trY * 100} ${q.brX * 100},${q.brY * 100} ${q.blX * 100},${q.blY * 100}`
+      : null;
 
     return (
       <div
         className="fixed inset-0 z-50 flex flex-col bg-black text-white select-none"
         role="dialog"
         aria-modal="true"
-        aria-label="Document Scanner"
+        aria-label="Live Document Scanner"
       >
         {/* Top Genius Scan iOS Camera Toolbar */}
-        <div className="flex items-center justify-between px-4 h-14 bg-black/80 backdrop-blur-md border-b border-white/10 z-20 shrink-0">
+        <div className="flex items-center justify-between px-3 sm:px-4 h-14 bg-black/85 backdrop-blur-md border-b border-white/10 z-20 shrink-0">
           <button
             onClick={onClose}
             className="min-h-[44px] min-w-[44px] flex items-center justify-center text-white/90 hover:text-white"
@@ -348,15 +642,15 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             <X className="w-6 h-6" />
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <button
               onClick={() => setFlashOn((f) => !f)}
-              className={`min-h-[38px] px-3 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+              className={`min-h-[38px] px-2.5 sm:px-3 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors ${
                 flashOn ? 'bg-orange-600 text-white' : 'bg-white/12 text-white/85 hover:bg-white/20'
               }`}
             >
               {flashOn ? <Zap className="w-3.5 h-3.5" /> : <ZapOff className="w-3.5 h-3.5" />}
-              <span>{flashOn ? 'Flash On' : 'Flash'}</span>
+              <span className="hidden sm:inline">{flashOn ? 'Torch On' : 'Torch'}</span>
             </button>
             <button
               onClick={() => setAutoCapture((a) => !a)}
@@ -376,6 +670,14 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
               </button>
             )}
             <button
+              onClick={handleSwitchCamera}
+              aria-label="Switch camera lens"
+              title="Switch camera"
+              className="min-h-[38px] min-w-[38px] rounded-full bg-white/12 text-white/85 hover:bg-white/20 flex items-center justify-center transition-colors"
+            >
+              <SwitchCamera className="w-4 h-4" />
+            </button>
+            <button
               onClick={() => setShowGrid((g) => !g)}
               aria-label="Toggle composition grid"
               className={`min-h-[38px] min-w-[38px] rounded-full flex items-center justify-center transition-colors ${
@@ -387,41 +689,71 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           </div>
         </div>
 
-        {/* Live Viewfinder Area */}
-        <div className="relative flex-1 overflow-hidden flex items-center justify-center bg-[#141416]">
-          {cameraActive ? (
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            /* Desk Preview Viewfinder when browser camera is unavailable */
-            <div className="relative w-full h-full flex items-center justify-center bg-gradient-to-b from-[#1E1E22] to-[#121214] p-8 sm:p-12">
-              <div className="relative h-full max-h-[560px] aspect-[3/4] rounded-md shadow-2xl overflow-hidden bg-white">
-                <img
-                  src={activeDemo.url}
-                  alt={activeDemo.label}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
+        {/* REAL Live Camera Viewfinder */}
+        <div className="relative flex-1 overflow-hidden flex items-center justify-center bg-[#0C0C0E]">
+          {/* Always mount <video> so srcObject attaches immediately when stream opens */}
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className={`w-full h-full object-cover ${cameraStatus === 'live' ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+          />
+
+          {/* Initializing Spinner */}
+          {cameraStatus === 'initializing' && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+              <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
+              <p className="text-sm font-semibold text-white">Starting live camera…</p>
+              <p className="text-xs text-white/60 max-w-xs">
+                Allow camera access when prompted to enable real-time edge detection and capture.
+              </p>
+            </div>
+          )}
+
+          {/* Denied or Unavailable Real Camera Recovery UI (Never silently fakes a dummy scan!) */}
+          {(cameraStatus === 'denied' || cameraStatus === 'unavailable') && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center bg-[#121215]">
+              <div className="w-14 h-14 rounded-2xl bg-orange-600/20 text-orange-400 flex items-center justify-center">
+                <Camera className="w-7 h-7" />
               </div>
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-full bg-black/70 backdrop-blur-md text-xs text-white/90 flex items-center gap-2 whitespace-nowrap">
-                <span>Desk Preview · {activeDemo.label}</span>
+              <div className="space-y-1.5 max-w-sm">
+                <h3 className="text-base font-bold text-white">
+                  {cameraStatus === 'denied' ? 'Camera Permission Needed' : 'Live Camera Stream Unavailable'}
+                </h3>
+                <p className="text-xs text-white/65 leading-relaxed">{cameraErrorMsg}</p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
                 <button
                   type="button"
-                  onClick={() => setDemoSampleIdx((i) => (i + 1) % DEMO_CAPTURE_SAMPLES.length)}
-                  className="text-orange-400 font-semibold hover:text-orange-300"
+                  onClick={() => setCameraRetryKey((k) => k + 1)}
+                  className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold flex items-center gap-2"
                 >
-                  Next Sheet
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Retry Live Camera</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => nativeCameraInputRef.current?.click()}
+                  className="min-h-[42px] px-4 rounded-xl bg-white/12 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-2"
+                >
+                  <Camera className="w-4 h-4 text-orange-400" />
+                  <span>Use Device Camera</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => galleryInputRef.current?.click()}
+                  className="min-h-[42px] px-4 rounded-xl bg-white/12 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-2"
+                >
+                  <ImageIcon className="w-4 h-4" />
+                  <span>Import Photos</span>
                 </button>
               </div>
             </div>
           )}
 
           {/* Composition Rule-of-Thirds Grid */}
-          {showGrid && (
+          {cameraStatus === 'live' && showGrid && (
             <div className="pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-25">
               <div className="border-r border-b border-white/40" />
               <div className="border-r border-b border-white/40" />
@@ -435,33 +767,75 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             </div>
           )}
 
-          {/* Genius Scan Signature Translucent Orange Document Boundary Quad */}
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-10 sm:p-16">
-            <div className="relative h-full max-h-[540px] aspect-[3/4] border-2 border-orange-500 bg-orange-500/10 rounded-sm transition-all duration-300">
-              <span className="absolute -top-1.5 -left-1.5 w-4 h-4 border-t-3 border-l-3 border-orange-400" />
-              <span className="absolute -top-1.5 -right-1.5 w-4 h-4 border-t-3 border-r-3 border-orange-400" />
-              <span className="absolute -bottom-1.5 -left-1.5 w-4 h-4 border-b-3 border-l-3 border-orange-400" />
-              <span className="absolute -bottom-1.5 -right-1.5 w-4 h-4 border-b-3 border-r-3 border-orange-400" />
+          {/* REAL-TIME Detected Document Orange Quad Overlay */}
+          {cameraStatus === 'live' && (
+            <div className="pointer-events-none absolute inset-0">
+              {quadPolyPoints ? (
+                <svg
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  className="w-full h-full"
+                >
+                  <polygon
+                    points={quadPolyPoints}
+                    fill={waitingPageSwap ? 'rgba(148,163,184,0.12)' : 'rgba(234, 88, 12, 0.18)'}
+                    stroke={waitingPageSwap ? '#94A3B8' : '#F97316'}
+                    strokeWidth="0.65"
+                  />
+                </svg>
+              ) : scanMode === 'idcard' ? (
+                <div className="absolute inset-0 flex items-center justify-center p-8">
+                  <div className="w-full max-w-md aspect-[1.586/1] border-2 border-dashed border-orange-400/90 bg-orange-500/8 rounded-xl" />
+                </div>
+              ) : null}
 
-              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/75 text-[11px] font-medium text-white whitespace-nowrap">
-                {scanMode === 'idcard'
-                  ? capturedPages.length === 0
-                    ? 'Align Front of ID Card'
-                    : 'Flip & Align Back of ID Card'
-                  : quadConfidence === 'locked'
-                  ? 'Document detected · Tap shutter to scan'
-                  : 'Align document inside frame'}
+              {/* Live Scanner Guidance Pill */}
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-full bg-black/75 backdrop-blur-md text-xs font-medium text-white whitespace-nowrap flex items-center gap-2">
+                {waitingPageSwap ? (
+                  <span>Page captured · Swap or turn sheet for next scan</span>
+                ) : scanMode === 'idcard' ? (
+                  <span>
+                    {capturedPages.length === 0
+                      ? 'Align Front of ID Card inside frame'
+                      : 'Flip & align Back of ID Card'}
+                  </span>
+                ) : detectedQuad && edgeConfidence >= 0.52 ? (
+                  <span>
+                    {autoCapture && stabilityProgress > 0.2
+                      ? `Hold steady… Auto-capturing (${Math.round(stabilityProgress * 100)}%)`
+                      : 'Document edges locked · Tap shutter'}
+                  </span>
+                ) : (
+                  <span>Point camera at document on contrasting surface</span>
+                )}
               </div>
             </div>
-          </div>
+          )}
 
           {/* Shutter Flash Feedback */}
-          {shutterFlash && <div className="pointer-events-none absolute inset-0 bg-white/80 z-30" />}
+          {shutterFlash && <div className="pointer-events-none absolute inset-0 bg-white/85 z-30" />}
         </div>
+
+        {/* Hidden Native Camera + Gallery File Inputs */}
+        <input
+          ref={nativeCameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={handleFileCaptureOrImport}
+        />
+        <input
+          ref={galleryInputRef}
+          type="file"
+          accept="image/*"
+          multiple={scanMode !== 'single'}
+          className="hidden"
+          onChange={handleFileCaptureOrImport}
+        />
 
         {/* Bottom Genius Scan Capture Dock */}
         <div className="bg-black/95 border-t border-white/10 px-4 pt-3 pb-safe space-y-4 shrink-0">
-          {/* Scan Mode Selector */}
           {!isAppendMode && (
             <div className="flex items-center justify-center gap-6 text-xs font-semibold">
               {(
@@ -486,7 +860,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
           {/* Shutter Row */}
           <div className="max-w-md mx-auto flex items-center justify-between px-4 pb-2">
-            {/* Import From Photos */}
+            {/* Import Real Photos */}
             <button
               type="button"
               onClick={() => galleryInputRef.current?.click()}
@@ -497,28 +871,49 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
               </span>
               <span className="text-[11px] font-medium">Photos</span>
             </button>
-            <input
-              ref={galleryInputRef}
-              type="file"
-              accept="image/*"
-              multiple={scanMode !== 'single'}
-              className="hidden"
-              onChange={handleGalleryUpload}
-            />
 
-            {/* Signature iOS Concentric Orange Shutter Button */}
+            {/* Concentric Genius Scan Orange Shutter with Live Stability Progress Ring */}
             <button
               type="button"
-              onClick={triggerCapture}
-              aria-label="Capture document page"
-              className="w-[74px] h-[74px] rounded-full border-4 border-white flex items-center justify-center active:scale-95 transition-transform"
+              onClick={() => {
+                if (cameraStatus === 'live') {
+                  captureLiveVideoFrame();
+                } else {
+                  nativeCameraInputRef.current?.click();
+                }
+              }}
+              aria-label="Capture live document photo"
+              className="relative w-[78px] h-[78px] rounded-full flex items-center justify-center active:scale-95 transition-transform"
             >
+              <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80">
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="36"
+                  fill="none"
+                  stroke="rgba(255,255,255,0.35)"
+                  strokeWidth="4"
+                />
+                {stabilityProgress > 0 && (
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r="36"
+                    fill="none"
+                    stroke="#F97316"
+                    strokeWidth="4"
+                    strokeDasharray={226.2}
+                    strokeDashoffset={226.2 * (1 - stabilityProgress)}
+                    strokeLinecap="round"
+                  />
+                )}
+              </svg>
               <span className="w-[58px] h-[58px] rounded-full bg-orange-600 hover:bg-orange-500 transition-colors flex items-center justify-center">
                 <Camera className="w-6 h-6 text-white" />
               </span>
             </button>
 
-            {/* Captured Stack Preview & Next Button */}
+            {/* Captured Stack Preview & Next */}
             <button
               type="button"
               disabled={capturedPages.length === 0}
@@ -551,7 +946,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     );
   }
 
-  /* PHASE 2: POST-CAPTURE REVIEW, FILTER & SAVE SHEET */
+  /* PHASE 2: POST-CAPTURE REVIEW, REAL OCR SMART NAMING & SAVE SHEET */
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-slate-100"
@@ -573,6 +968,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           </h2>
           <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
             {capturedPages.length} {capturedPages.length === 1 ? 'page' : 'pages'}
+            {ocrInFlightCount > 0 ? ` · OCR running (${ocrInFlightCount})…` : ''}
           </p>
         </div>
         <button
@@ -589,7 +985,6 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left: Captured Pages Grid */}
           <div className="lg:col-span-7 space-y-4">
-            {/* Global Filter Strip */}
             <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-slate-200/80 dark:border-white/10 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
@@ -618,7 +1013,6 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
               </div>
             </div>
 
-            {/* Page Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
               {capturedPages.map((pg, idx) => (
                 <div
@@ -630,7 +1024,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   </div>
                   <div className="flex items-center justify-between px-0.5">
                     <span className="text-xs font-mono font-semibold text-slate-600 dark:text-slate-300">
-                      P{idx + 1}
+                      P{idx + 1} {pg.ocrText ? '· OCR' : ''}
                     </span>
                     <div className="flex items-center gap-1">
                       <button
@@ -674,14 +1068,25 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             </div>
           </div>
 
-          {/* Right: Genius Scan Naming, Folder, PDF Settings */}
+          {/* Right: Smart Naming, Folder, PDF Settings */}
           {!isAppendMode && (
             <div className="lg:col-span-5 space-y-4">
               <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 sm:p-5 border border-slate-200/80 dark:border-white/10 space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
-                    Document Title
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Document Title
+                    </label>
+                    <button
+                      type="button"
+                      disabled={isSmartNaming}
+                      onClick={handleSmartTitleSuggestion}
+                      className="text-xs font-semibold text-orange-600 dark:text-orange-400 hover:underline flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>{isSmartNaming ? 'Reading OCR…' : 'Smart Name from OCR'}</span>
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={docTitle}
@@ -722,7 +1127,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
-                      Tags (comma separated)
+                      Tags (auto-enriched by OCR)
                     </label>
                     <input
                       type="text"
@@ -734,7 +1139,6 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   </div>
                 </div>
 
-                {/* Page Size & Quality Segmented Controls */}
                 <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-white/8">
                   <div>
                     <span className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
@@ -793,13 +1197,12 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   </div>
                 </div>
 
-                {/* Smart Toggles */}
                 <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-white/8">
                   <label className="flex items-center justify-between gap-3 cursor-pointer">
                     <div>
                       <div className="text-sm font-medium">Searchable OCR Text Layer</div>
                       <div className="text-xs text-slate-500 dark:text-slate-400">
-                        Index words for instant full-text search
+                        Extract on-device OCR &amp; build 384-dim semantic index
                       </div>
                     </div>
                     <input

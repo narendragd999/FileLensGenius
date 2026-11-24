@@ -10,14 +10,32 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { SavedSearch, ScanDocument, SearchMode } from '../types/filelens';
+import {
+  DeviceIndexSummary,
+  FileCategory,
+  IndexProgress,
+  IndexStats,
+  SavedSearch,
+  ScanDocument,
+  SearchMode,
+} from '../types/filelens';
 import { formatBytes, formatShortDate, triggerFileDownload } from '../utils/formatters';
 import { exportSearchResults, runDocumentSearch } from '../utils/searchEngine';
 import { PageCanvasPreview } from './PageCanvasPreview';
+import { SmartIndexingBar } from './SmartIndexingBar';
 
 interface SearchHubViewProps {
   documents: ScanDocument[];
   savedSearches: SavedSearch[];
+  indexStats: IndexStats;
+  linkedDeviceRootsCount: number;
+  isIndexing: boolean;
+  indexProgress: IndexProgress | null;
+  lastIndexSummary: DeviceIndexSummary | null;
+  onOpenDeviceIndexer: () => void;
+  onIndexFiles: (files: File[], sourceLabel: string) => void;
+  onRunDeltaReindex: () => void;
+  onCancelIndexing: () => void;
   onSaveSearch: (query: string, mode: SearchMode) => void;
   onDeleteSavedSearch: (id: string) => void;
   onOpenDocumentAtPage: (docId: string, pageIndex: number) => void;
@@ -26,12 +44,23 @@ interface SearchHubViewProps {
 }
 
 const SEARCH_MODES: { id: SearchMode; label: string; hint: string }[] = [
-  { id: 'quick', label: 'Quick Search', hint: 'Partial + bilingual Hinglish/concept expansion (try "bill", "doctor", "dawai")' },
-  { id: 'natural', label: 'Natural Language', hint: 'Semantic phrase discovery (try "show my paid studio invoice")' },
-  { id: 'exact', label: 'Exact Match', hint: 'Exact phrase substring match (try "Apex Solutions")' },
+  { id: 'quick', label: 'Quick Search', hint: 'Partial + bilingual Hinglish/concept expansion across ALL indexed device files (try "bill", "doctor", "docx")' },
+  { id: 'natural', label: 'Natural Language', hint: '384-dim offline semantic vector similarity across all files & OCR chunks (try "show my paid studio invoice")' },
+  { id: 'exact', label: 'Exact Match', hint: 'Exact phrase substring match across PDFs, Office, OCR photos, code & filenames (try "Apex Solutions")' },
   { id: 'whole', label: 'Whole Word', hint: 'Strict word boundary matching (try "PAID")' },
   { id: 'wildcard', label: 'Wildcard', hint: 'Use * and ? wildcards (try "Micro*" or "NDS-????")' },
   { id: 'boolean', label: 'Boolean', hint: 'Combine AND / OR / NOT operators (try "PAID AND Invoice")' },
+];
+
+const FILE_TYPE_FILTERS: { id: 'all' | FileCategory; label: string }[] = [
+  { id: 'all', label: 'All File Types' },
+  { id: 'pdf', label: 'PDF' },
+  { id: 'image', label: 'Images & OCR' },
+  { id: 'office', label: 'Office (DOCX/XLSX/PPTX)' },
+  { id: 'text_code', label: 'Text & Code' },
+  { id: 'archive', label: 'Archives' },
+  { id: 'audio_video', label: 'Media' },
+  { id: 'other', label: 'Other' },
 ];
 
 const QUICK_CONCEPTS = ['PAID AND Invoice', 'cholesterol', 'Apex*', 'doctor', 'API Gateway', 'ID Card'];
@@ -61,6 +90,15 @@ function highlightText(text: string, terms: string[]): React.ReactNode {
 export const SearchHubView: React.FC<SearchHubViewProps> = ({
   documents,
   savedSearches,
+  indexStats,
+  linkedDeviceRootsCount,
+  isIndexing,
+  indexProgress,
+  lastIndexSummary,
+  onOpenDeviceIndexer,
+  onIndexFiles,
+  onRunDeltaReindex,
+  onCancelIndexing,
   onSaveSearch,
   onDeleteSavedSearch,
   onOpenDocumentAtPage,
@@ -69,9 +107,18 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
 }) => {
   const [query, setQuery] = useState<string>('');
   const [mode, setMode] = useState<SearchMode>('quick');
+  const [fileTypeFilter, setFileTypeFilter] = useState<'all' | FileCategory>('all');
   const [activeMatchIdx, setActiveMatchIdx] = useState<number>(0);
 
-  const results = useMemo(() => runDocumentSearch(documents, query, mode), [documents, query, mode]);
+  const filteredDocuments = useMemo(() => {
+    if (fileTypeFilter === 'all') return documents;
+    return documents.filter((d) => (d.fileCategory ?? 'pdf') === fileTypeFilter);
+  }, [documents, fileTypeFilter]);
+
+  const results = useMemo(
+    () => runDocumentSearch(filteredDocuments, query, mode),
+    [filteredDocuments, query, mode]
+  );
 
   const safeMatchIdx = results.length > 0 ? Math.min(activeMatchIdx, results.length - 1) : 0;
   const currentModeMeta = SEARCH_MODES.find((m) => m.id === mode)!;
@@ -81,20 +128,32 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
     const { content, mime, ext } = exportSearchResults(results, query, format);
     const blob = new Blob([content], { type: mime });
     triggerFileDownload(blob, `FileLens_Search_${Date.now()}.${ext}`);
-    onToast(`Exported ${results.length} OCR result(s) as ${ext.toUpperCase()}`);
+    onToast(`Exported ${results.length} search result(s) as ${ext.toUpperCase()}`);
   };
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-          OCR Search Hub
+          Universal Device Search &amp; Index
         </h1>
         <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-          6 offline intelligence modes across {documents.length} indexed PDFs and{' '}
-          {documents.reduce((acc, d) => acc + d.pages.length, 0)} scanned pages
+          Search inside any file on your device—PDFs, Office docs, OCR photos, code, archives &amp; media
         </p>
       </div>
+
+      {/* Core Universal Smart Indexing Module */}
+      <SmartIndexingBar
+        stats={indexStats}
+        linkedDeviceRootsCount={linkedDeviceRootsCount}
+        isIndexing={isIndexing}
+        progress={indexProgress}
+        lastSummary={lastIndexSummary}
+        onOpenDeviceIndexer={onOpenDeviceIndexer}
+        onIndexFiles={onIndexFiles}
+        onRunDeltaReindex={onRunDeltaReindex}
+        onCancelIndexing={onCancelIndexing}
+      />
 
       {/* Search Input Bar */}
       <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-slate-200/80 dark:border-white/10 space-y-3.5">
@@ -108,7 +167,7 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 setQuery(e.target.value);
                 setActiveMatchIdx(0);
               }}
-              placeholder="Search inside scanned PDFs, receipts, lab values, or clauses…"
+              placeholder="Search inside ANY device file: PDFs, DOCX, XLSX, OCR photos, ZIPs, code, filenames…"
               className="w-full h-12 pl-10 pr-9 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
             {query && (
@@ -153,6 +212,27 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
               }`}
             >
               {m.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Universal File Type Filter Row */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          {FILE_TYPE_FILTERS.map((ft) => (
+            <button
+              key={ft.id}
+              type="button"
+              onClick={() => {
+                setFileTypeFilter(ft.id);
+                setActiveMatchIdx(0);
+              }}
+              className={`min-h-[30px] px-2.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                fileTypeFilter === ft.id
+                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                  : 'bg-slate-50 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/10'
+              }`}
+            >
+              {ft.label}
             </button>
           ))}
         </div>
@@ -239,7 +319,7 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-10 text-center space-y-2">
             <h3 className="text-sm font-bold">No OCR hits for &ldquo;{query}&rdquo;</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Switch to Quick Search for bilingual/concept matching or Natural Language for broader recall.
+              Switch to Natural Language for 384-dim semantic vector search, or index new folders above.
             </p>
           </div>
         ) : (
@@ -279,11 +359,38 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                         <span>Organize</span>
                       </button>
                     </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                      Jump to Page {item.pageIndex + 1} · {item.matchCount} match
-                      {item.matchCount > 1 ? 'es' : ''} · {formatBytes(item.doc.sizeBytes)} ·{' '}
-                      {formatShortDate(item.doc.updatedAt)}
+                    <div className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums flex flex-wrap items-center gap-x-2">
+                      {item.doc.fileExtension && (
+                        <>
+                          <span className="uppercase font-semibold text-slate-700 dark:text-slate-200">
+                            {item.doc.fileExtension}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                        </>
+                      )}
+                      <span>Jump to Page {item.pageIndex + 1}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        {item.matchCount} match{item.matchCount > 1 ? 'es' : ''}
+                      </span>
+                      {item.semanticSimilarity !== undefined && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-orange-600 dark:text-orange-400 font-semibold">
+                            {Math.round(item.semanticSimilarity * 100)}% vector match
+                          </span>
+                        </>
+                      )}
+                      <span aria-hidden="true">·</span>
+                      <span>{formatBytes(item.doc.sizeBytes)}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{formatShortDate(item.doc.updatedAt)}</span>
                     </div>
+                    {item.doc.sourcePath && (
+                      <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 truncate">
+                        {item.doc.sourcePath}
+                      </div>
+                    )}
                     <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
                       {highlightText(item.snippet, item.matchedTerms)}
                     </p>
@@ -294,7 +401,6 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           </div>
         )
       ) : (
-        /* Saved Searches & Bookmarked Documents Overview */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-4 sm:p-5 space-y-3">
             <h2 className="text-sm font-bold">Saved Searches</h2>

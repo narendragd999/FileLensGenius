@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   Brain,
@@ -6,6 +6,7 @@ import {
   CreditCard,
   FileText,
   Folder,
+  HardDrive,
   Moon,
   Search,
   Settings,
@@ -14,9 +15,14 @@ import {
 import {
   AppPreferences,
   AppTab,
+  DeviceIndexFilters,
+  DeviceIndexSummary,
+  DeviceRootPreset,
+  DeviceStorageRoot,
   DocFolder,
   DocumentPage,
-  FULL_QUAD,
+  IndexProgress,
+  IndexStats,
   PdfCompressPreset,
   SavedSearch,
   SavedSignature,
@@ -33,7 +39,19 @@ import {
   INITIAL_SAVED_SEARCHES,
   INITIAL_VOICE_NOTES,
 } from './data/seedData';
-import { resolveNamingTemplate } from './utils/formatters';
+import {
+  runLibraryDeltaReindex,
+  runSmartIndexingPipeline,
+} from './utils/smartIndexer';
+import {
+  deleteStoredDeviceRoot,
+  ensureDirectoryReadPermission,
+  getStoredDeviceRootHandle,
+  listStoredDeviceRoots,
+  pickAndLinkDeviceRoot,
+  updateStoredDeviceRootStats,
+  walkDeviceDirectoryHandle,
+} from './utils/deviceRoots';
 import { DocumentsView } from './components/DocumentsView';
 import { SearchHubView } from './components/SearchHubView';
 import { SecondBrainView } from './components/SecondBrainView';
@@ -42,8 +60,9 @@ import { ToolsAndSettingsView } from './components/ToolsAndSettingsView';
 import { LiveScannerModal } from './components/LiveScannerModal';
 import { PageOrganizerModal } from './components/PageOrganizerModal';
 import { PdfViewerModal } from './components/PdfViewerModal';
+import { DeviceIndexerModal } from './components/DeviceIndexerModal';
 
-const STORAGE_KEY = 'filelens_scan_workspace_v1';
+const STORAGE_KEY = 'filelens_scan_workspace_v2';
 
 interface PersistedState {
   documents: ScanDocument[];
@@ -52,6 +71,7 @@ interface PersistedState {
   savedSearches: SavedSearch[];
   savedSignatures: SavedSignature[];
   preferences: AppPreferences;
+  lastIndexSummary?: DeviceIndexSummary | null;
 }
 
 function loadInitialState(): PersistedState {
@@ -67,6 +87,7 @@ function loadInitialState(): PersistedState {
           savedSearches: parsed.savedSearches ?? INITIAL_SAVED_SEARCHES,
           savedSignatures: parsed.savedSignatures ?? [],
           preferences: { ...DEFAULT_PREFERENCES, ...(parsed.preferences ?? {}) },
+          lastIndexSummary: parsed.lastIndexSummary ?? null,
         };
       }
     }
@@ -74,12 +95,18 @@ function loadInitialState(): PersistedState {
     // Fallback to seed state
   }
   return {
-    documents: INITIAL_DOCUMENTS,
+    documents: INITIAL_DOCUMENTS.map((d) => ({
+      ...d,
+      ocrStatus: 'done',
+      indexedAt: d.updatedAt,
+      chunksCount: Math.max(1, d.pages.length),
+    })),
     folders: INITIAL_FOLDERS,
     voiceNotes: INITIAL_VOICE_NOTES,
     savedSearches: INITIAL_SAVED_SEARCHES,
     savedSignatures: [],
     preferences: DEFAULT_PREFERENCES,
+    lastIndexSummary: null,
   };
 }
 
@@ -91,6 +118,16 @@ export default function App() {
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(initial.savedSearches);
   const [savedSignatures, setSavedSignatures] = useState<SavedSignature[]>(initial.savedSignatures);
   const [preferences, setPreferences] = useState<AppPreferences>(initial.preferences);
+
+  // Smart Indexing & Full-Device Storage Roots state
+  const [isIndexing, setIsIndexing] = useState<boolean>(false);
+  const [indexProgress, setIndexProgress] = useState<IndexProgress | null>(null);
+  const [lastIndexSummary, setLastIndexSummary] = useState<DeviceIndexSummary | null>(
+    initial.lastIndexSummary ?? null
+  );
+  const [deviceRoots, setDeviceRoots] = useState<DeviceStorageRoot[]>([]);
+  const [showDeviceIndexer, setShowDeviceIndexer] = useState<boolean>(false);
+  const indexAbortRef = useRef<AbortController | null>(null);
 
   const [activeTab, setActiveTab] = useState<AppTab>('documents');
   const [selectedFolderId, setSelectedFolderId] = useState<string>('all');
@@ -105,7 +142,10 @@ export default function App() {
   const [organizerDocId, setOrganizerDocId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // Sync light/dark class on <html>
+  useEffect(() => {
+    listStoredDeviceRoots().then((roots) => setDeviceRoots(roots));
+  }, []);
+
   useEffect(() => {
     const root = document.documentElement;
     if (preferences.theme === 'dark') {
@@ -115,7 +155,6 @@ export default function App() {
     }
   }, [preferences.theme]);
 
-  // Persist workspace cleanly to localStorage
   useEffect(() => {
     try {
       const payload: PersistedState = {
@@ -125,12 +164,13 @@ export default function App() {
         savedSearches,
         savedSignatures,
         preferences,
+        lastIndexSummary,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
-      // Ignore quota exceeded for large custom image uploads
+      // Ignore storage quota overflow for very large custom uploads
     }
-  }, [documents, folders, voiceNotes, savedSearches, savedSignatures, preferences]);
+  }, [documents, folders, voiceNotes, savedSearches, savedSignatures, preferences, lastIndexSummary]);
 
   const showToast = (message: string) => {
     setToastMsg(message);
@@ -138,9 +178,257 @@ export default function App() {
 
   useEffect(() => {
     if (!toastMsg) return;
-    const t = window.setTimeout(() => setToastMsg(null), 2800);
+    const t = window.setTimeout(() => setToastMsg(null), 3000);
     return () => window.clearTimeout(t);
   }, [toastMsg]);
+
+  const indexStats: IndexStats = useMemo(() => {
+    const ocrDone = documents.filter(
+      (d) => d.ocrStatus === 'done' || d.pages.every((p) => p.ocrText && p.ocrText.trim().length > 0)
+    ).length;
+    const totalChunks = documents.reduce(
+      (acc, d) => acc + (d.chunksCount ?? Math.max(1, d.pages.length)),
+      0
+    );
+    return {
+      totalFiles: documents.length,
+      ocrDone,
+      ocrPending: Math.max(0, documents.length - ocrDone),
+      totalChunks,
+      cardsCount: documents.filter((d) => d.isSmartCard).length,
+    };
+  }, [documents]);
+
+  const handleIndexFiles = async (
+    files: File[],
+    sourceLabel: string,
+    filePathMap?: WeakMap<File, string>,
+    filters?: DeviceIndexFilters
+  ) => {
+    if (isIndexing || files.length === 0) return;
+    const controller = new AbortController();
+    indexAbortRef.current = controller;
+    setIsIndexing(true);
+    setIndexProgress({
+      indexed: 0,
+      total: files.length,
+      currentFile: files[0].name,
+      phase: 'Scanning',
+      skippedUnchanged: 0,
+      newOrUpdated: 0,
+    });
+
+    try {
+      const result = await runSmartIndexingPipeline({
+        files,
+        existingDocuments: documents,
+        defaultFilter: preferences.defaultFilter,
+        sourceLabel,
+        filePathMap,
+        filters,
+        signal: controller.signal,
+        onProgress: (prog) => setIndexProgress(prog),
+      });
+
+      if (result.newDocuments.length > 0 || result.updatedDocuments.length > 0) {
+        setDocuments((prev) => {
+          const updatedMap = new Map(result.updatedDocuments.map((d) => [d.id, d]));
+          const merged = prev.map((d) => updatedMap.get(d.id) ?? d);
+          return [...result.newDocuments, ...merged];
+        });
+      }
+
+      setLastIndexSummary(result.summary);
+      if (result.summary.wasCancelled) {
+        showToast(`Indexing cancelled · ${result.summary.newOrUpdated} file(s) indexed`);
+      } else if (result.summary.totalScanned === 0) {
+        showToast('No files matched your active device scope filters');
+      } else {
+        showToast(
+          `Smart Indexed ${result.summary.newOrUpdated} file(s) · ${result.summary.skippedUnchanged} unchanged skipped`
+        );
+      }
+    } catch {
+      showToast('Smart Indexing encountered an error on one or more files');
+    } finally {
+      setIsIndexing(false);
+      setIndexProgress(null);
+      indexAbortRef.current = null;
+    }
+  };
+
+  const runWalkAndIndexRoots = async (
+    entries: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[],
+    sourceLabel: string,
+    filters: DeviceIndexFilters
+  ) => {
+    if (isIndexing || entries.length === 0) return;
+    const controller = new AbortController();
+    indexAbortRef.current = controller;
+    setIsIndexing(true);
+
+    try {
+      const combinedFiles: File[] = [];
+      const combinedPathMap = new WeakMap<File, string>();
+      let totalFoldersScanned = 0;
+
+      for (const { root, handle } of entries) {
+        if (controller.signal.aborted) break;
+        const remainingCap = Math.max(0, filters.maxFilesPerRun - combinedFiles.length);
+        if (remainingCap === 0) break;
+
+        const walked = await walkDeviceDirectoryHandle(
+          handle,
+          root.name,
+          { ...filters, maxFilesPerRun: remainingCap },
+          controller.signal,
+          (disc) => {
+            setIndexProgress({
+              indexed: 0,
+              total: combinedFiles.length + disc.filesFound,
+              currentFile: disc.currentFolder,
+              phase: 'Discovering Device Folders',
+              skippedUnchanged: 0,
+              newOrUpdated: 0,
+              foldersScanned: totalFoldersScanned + disc.foldersScanned,
+            });
+          }
+        );
+
+        totalFoldersScanned += walked.foldersScanned;
+        for (const f of walked.files) {
+          combinedFiles.push(f);
+          const p = walked.filePathMap.get(f);
+          if (p) combinedPathMap.set(f, p);
+        }
+
+        await updateStoredDeviceRootStats(root.id, walked.files.length, walked.foldersScanned);
+      }
+
+      const refreshedRoots = await listStoredDeviceRoots();
+      setDeviceRoots(refreshedRoots);
+
+      if (combinedFiles.length === 0) {
+        showToast(
+          controller.signal.aborted
+            ? 'Device discovery cancelled'
+            : 'No matching files found in linked device storage'
+        );
+        return;
+      }
+
+      const result = await runSmartIndexingPipeline({
+        files: combinedFiles,
+        existingDocuments: documents,
+        defaultFilter: preferences.defaultFilter,
+        sourceLabel,
+        filePathMap: combinedPathMap,
+        filters,
+        signal: controller.signal,
+        onProgress: (prog) => setIndexProgress(prog),
+      });
+
+      if (result.newDocuments.length > 0 || result.updatedDocuments.length > 0) {
+        setDocuments((prev) => {
+          const updatedMap = new Map(result.updatedDocuments.map((d) => [d.id, d]));
+          const merged = prev.map((d) => updatedMap.get(d.id) ?? d);
+          return [...result.newDocuments, ...merged];
+        });
+      }
+
+      setLastIndexSummary(result.summary);
+      showToast(
+        result.summary.wasCancelled
+          ? `Device sync cancelled · ${result.summary.newOrUpdated} file(s) indexed`
+          : `Device indexed ${result.summary.newOrUpdated} file(s) across ${totalFoldersScanned} folder(s) · ${result.summary.skippedUnchanged} unchanged`
+      );
+    } catch {
+      showToast('Device indexing encountered an error on one or more folders');
+    } finally {
+      setIsIndexing(false);
+      setIndexProgress(null);
+      indexAbortRef.current = null;
+    }
+  };
+
+  const handleLinkAndIndexPreset = async (
+    preset: DeviceRootPreset,
+    filters: DeviceIndexFilters
+  ): Promise<'linked' | 'cancelled' | 'fallback_needed'> => {
+    const res = await pickAndLinkDeviceRoot(preset);
+    if (res.status === 'cancelled') return 'cancelled';
+    if (res.status === 'fallback_needed') return 'fallback_needed';
+
+    const refreshed = await listStoredDeviceRoots();
+    setDeviceRoots(refreshed);
+    void runWalkAndIndexRoots([{ root: res.root, handle: res.handle }], `Device: ${res.root.name}`, filters);
+    return 'linked';
+  };
+
+  const handleSyncSingleRoot = async (rootId: string, filters: DeviceIndexFilters) => {
+    const root = deviceRoots.find((r) => r.id === rootId);
+    if (!root) return;
+    const handle = await getStoredDeviceRootHandle(rootId);
+    if (!handle) {
+      showToast(`Re-link "${root.name}" to grant browser read access`);
+      return;
+    }
+    const granted = await ensureDirectoryReadPermission(handle);
+    if (!granted) {
+      showToast(`Permission denied for "${root.name}"`);
+      return;
+    }
+    await runWalkAndIndexRoots([{ root, handle }], `Device: ${root.name}`, filters);
+  };
+
+  const handleSyncAllDeviceRoots = async (filters: DeviceIndexFilters) => {
+    const ready: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[] = [];
+    for (const root of deviceRoots) {
+      const handle = await getStoredDeviceRootHandle(root.id);
+      if (!handle) continue;
+      const granted = await ensureDirectoryReadPermission(handle);
+      if (granted) ready.push({ root, handle });
+    }
+    if (ready.length === 0) {
+      showToast('Grant folder permission or link a device storage root first');
+      return;
+    }
+    await runWalkAndIndexRoots(ready, `Entire Device (${ready.length} roots)`, filters);
+  };
+
+  const handleRemoveDeviceRoot = async (rootId: string) => {
+    await deleteStoredDeviceRoot(rootId);
+    setDeviceRoots((prev) => prev.filter((r) => r.id !== rootId));
+    showToast('Unlinked device storage root');
+  };
+
+  const handleRunDeltaReindex = async () => {
+    if (isIndexing || documents.length === 0) return;
+    const controller = new AbortController();
+    indexAbortRef.current = controller;
+    setIsIndexing(true);
+
+    try {
+      const { updatedDocs, summary } = await runLibraryDeltaReindex(
+        documents,
+        controller.signal,
+        (prog) => setIndexProgress(prog)
+      );
+      setDocuments(updatedDocs);
+      setLastIndexSummary(summary);
+      showToast(
+        `Delta Sync complete · ${summary.newOrUpdated} enriched, ${summary.skippedUnchanged} up-to-date`
+      );
+    } finally {
+      setIsIndexing(false);
+      setIndexProgress(null);
+      indexAbortRef.current = null;
+    }
+  };
+
+  const handleCancelIndexing = () => {
+    indexAbortRef.current?.abort();
+  };
 
   const activeViewerDoc = useMemo(
     () => (viewerState ? documents.find((d) => d.id === viewerState.docId) ?? null : null),
@@ -164,53 +452,6 @@ export default function App() {
     setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
   };
 
-  const handleImportFilesAsDocument = (files: FileList) => {
-    const readers = Array.from(files).map(
-      (file, idx) =>
-        new Promise<DocumentPage>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            resolve({
-              id: `pg-imp-${Date.now()}-${idx}`,
-              imageUrl: String(reader.result),
-              rotation: 0,
-              filter: preferences.defaultFilter,
-              quad: FULL_QUAD,
-              brightness: 1,
-              contrast: 1,
-              ocrText: `Imported scan from ${file.name}.`,
-              signatures: [],
-            });
-          };
-          reader.readAsDataURL(file);
-        })
-    );
-
-    Promise.all(readers).then((pages) => {
-      const newDoc: ScanDocument = {
-        id: `doc-imp-${Date.now()}`,
-        title:
-          files.length === 1
-            ? files[0].name.replace(/\.[^.]+$/, '')
-            : resolveNamingTemplate(preferences.namingTemplate, documents.length + 1),
-        folderId: selectedFolderId !== 'all' && selectedFolderId !== 'bookmarked' ? selectedFolderId : 'inbox',
-        tags: ['Imported'],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        pages,
-        isBookmarked: false,
-        isSmartCard: false,
-        pageSizePreset: preferences.defaultPageSize,
-        qualityPreset: preferences.defaultQuality,
-        sizeBytes: Array.from(files).reduce((acc, f) => acc + f.size, 0) || pages.length * 380_000,
-        searchableOcr: preferences.searchablePdfOcrLayer,
-      };
-      setDocuments((prev) => [newDoc, ...prev]);
-      setOrganizerDocId(newDoc.id);
-      showToast(`Imported ${pages.length} page(s) — ready to organize`);
-    });
-  };
-
   const handleMergeDocuments = (docIds: string[]) => {
     const targets = documents.filter((d) => docIds.includes(d.id));
     if (targets.length < 2) return;
@@ -225,6 +466,8 @@ export default function App() {
       sizeBytes: targets.reduce((acc, d) => acc + d.sizeBytes, 0),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      ocrStatus: 'done',
+      chunksCount: mergedPages.length,
     };
     setDocuments((prev) => [merged, ...prev]);
     setOrganizerDocId(merged.id);
@@ -248,7 +491,7 @@ export default function App() {
 
   const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
     { id: 'documents', label: 'Documents', icon: <FileText className="w-5 h-5" /> },
-    { id: 'search', label: 'Search', icon: <Search className="w-5 h-5" /> },
+    { id: 'search', label: 'Search & Index', icon: <Search className="w-5 h-5" /> },
     { id: 'brain', label: 'Brain', icon: <Brain className="w-5 h-5" /> },
     { id: 'cards', label: 'Cards', icon: <CreditCard className="w-5 h-5" /> },
     { id: 'settings', label: 'Tools', icon: <Settings className="w-5 h-5" /> },
@@ -256,7 +499,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-[#F5F5F7]">
-      {/* Desktop Left Sidebar Rail (iPadOS / macOS Catalyst Genius Scan Layout) */}
+      {/* Desktop Left Sidebar Rail */}
       <aside className="hidden lg:flex lg:flex-col lg:w-68 xl:w-72 shrink-0 bg-white dark:bg-[#1C1C1E] border-r border-slate-200/80 dark:border-white/10 sticky top-0 h-screen">
         <div className="p-5 flex items-center justify-between">
           <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
@@ -278,8 +521,8 @@ export default function App() {
           </button>
         </div>
 
-        {/* Primary Genius Scan Orange CTA */}
-        <div className="px-4 pb-4">
+        {/* Primary Genius Scan Orange CTA + Quick Index Entire Device */}
+        <div className="px-4 pb-4 space-y-2">
           <button
             type="button"
             onClick={() => setScannerState({ open: true, mode: 'batch' })}
@@ -287,6 +530,18 @@ export default function App() {
           >
             <Camera className="w-4 h-4" />
             <span>Scan Document</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowDeviceIndexer(true)}
+            className="w-full h-10 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 text-slate-800 dark:text-slate-100 hover:text-orange-600 text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
+          >
+            <HardDrive className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+            <span>
+              {deviceRoots.length > 0
+                ? `Index Device (${deviceRoots.length})`
+                : 'Index Entire Device'}
+            </span>
           </button>
         </div>
 
@@ -429,6 +684,15 @@ export default function App() {
                 documents={documents}
                 folders={folders}
                 selectedFolderId={selectedFolderId}
+                indexStats={indexStats}
+                linkedDeviceRootsCount={deviceRoots.length}
+                isIndexing={isIndexing}
+                indexProgress={indexProgress}
+                lastIndexSummary={lastIndexSummary}
+                onOpenDeviceIndexer={() => setShowDeviceIndexer(true)}
+                onIndexFiles={handleIndexFiles}
+                onRunDeltaReindex={handleRunDeltaReindex}
+                onCancelIndexing={handleCancelIndexing}
                 onSelectFolder={setSelectedFolderId}
                 onCreateFolder={(name) => {
                   const id = `folder-${Date.now()}`;
@@ -437,7 +701,6 @@ export default function App() {
                   showToast(`Created folder "${name}"`);
                 }}
                 onOpenScanner={(mode) => setScannerState({ open: true, mode })}
-                onImportFilesAsDocument={handleImportFilesAsDocument}
                 onOpenViewer={(docId) => setViewerState({ docId, pageIndex: 0 })}
                 onOpenOrganizer={(docId) => setOrganizerDocId(docId)}
                 onToggleBookmark={(docId) => {
@@ -479,6 +742,15 @@ export default function App() {
               <SearchHubView
                 documents={documents}
                 savedSearches={savedSearches}
+                indexStats={indexStats}
+                linkedDeviceRootsCount={deviceRoots.length}
+                isIndexing={isIndexing}
+                indexProgress={indexProgress}
+                lastIndexSummary={lastIndexSummary}
+                onOpenDeviceIndexer={() => setShowDeviceIndexer(true)}
+                onIndexFiles={handleIndexFiles}
+                onRunDeltaReindex={handleRunDeltaReindex}
+                onCancelIndexing={handleCancelIndexing}
                 onSaveSearch={(query, mode: SearchMode) => {
                   setSavedSearches((prev) => [
                     { id: `ss-${Date.now()}`, query, mode, createdAt: new Date().toISOString() },
@@ -568,12 +840,25 @@ export default function App() {
               <ToolsAndSettingsView
                 documents={documents}
                 preferences={preferences}
+                indexStats={indexStats}
+                linkedDeviceRootsCount={deviceRoots.length}
+                isIndexing={isIndexing}
+                indexProgress={indexProgress}
+                lastIndexSummary={lastIndexSummary}
+                onOpenDeviceIndexer={() => setShowDeviceIndexer(true)}
+                onIndexFiles={handleIndexFiles}
+                onRunDeltaReindex={handleRunDeltaReindex}
+                onCancelIndexing={handleCancelIndexing}
                 onUpdatePreferences={setPreferences}
                 onBatchCompressPdfs={handleBatchCompressPdfs}
+                onDeleteDocument={(docId) => {
+                  setDocuments((prev) => prev.filter((d) => d.id !== docId));
+                  showToast('Removed duplicate document');
+                }}
                 onExportWorkspaceBackup={() =>
                   JSON.stringify(
                     {
-                      formatVersion: 1,
+                      formatVersion: 2,
                       exportedAtIso: new Date().toISOString(),
                       documents,
                       folders,
@@ -604,12 +889,20 @@ export default function App() {
                   }
                 }}
                 onResetDemoWorkspace={() => {
-                  setDocuments(INITIAL_DOCUMENTS);
+                  setDocuments(
+                    INITIAL_DOCUMENTS.map((d) => ({
+                      ...d,
+                      ocrStatus: 'done',
+                      indexedAt: d.updatedAt,
+                      chunksCount: Math.max(1, d.pages.length),
+                    }))
+                  );
                   setFolders(INITIAL_FOLDERS);
                   setVoiceNotes(INITIAL_VOICE_NOTES);
                   setSavedSearches(INITIAL_SAVED_SEARCHES);
                   setSavedSignatures([]);
                   setPreferences(DEFAULT_PREFERENCES);
+                  setLastIndexSummary(null);
                   localStorage.removeItem(STORAGE_KEY);
                   showToast('Restored default sample documents');
                 }}
@@ -638,7 +931,6 @@ export default function App() {
               onClick={() => setActiveTab('search')}
             />
 
-            {/* Centered Signature Genius Scan Orange Camera FAB */}
             <div className="flex items-center justify-center">
               <button
                 type="button"
@@ -680,7 +972,9 @@ export default function App() {
             setScannerState({ open: false, mode: 'batch' });
             setActiveTab('documents');
             setOrganizerDocId(newDoc.id);
-            showToast(`Saved "${newDoc.title}" (${newDoc.pages.length} page${newDoc.pages.length > 1 ? 's' : ''})`);
+            showToast(
+              `Saved & indexed "${newDoc.title}" (${newDoc.pages.length} page${newDoc.pages.length > 1 ? 's' : ''})`
+            );
           }}
           onCompleteAppendPages={(newPages) => {
             if (appendTargetDoc) {
@@ -689,6 +983,7 @@ export default function App() {
                 pages: [...appendTargetDoc.pages, ...newPages],
                 sizeBytes: appendTargetDoc.sizeBytes + newPages.length * 360_000,
                 updatedAt: new Date().toISOString(),
+                chunksCount: (appendTargetDoc.chunksCount ?? appendTargetDoc.pages.length) + newPages.length,
               });
               showToast(`Appended ${newPages.length} page(s) to "${appendTargetDoc.title}"`);
             }
@@ -736,7 +1031,26 @@ export default function App() {
         />
       )}
 
-      {/* Subtle Floating Toast */}
+      {/* Full-Device Universal Indexer Modal */}
+      {showDeviceIndexer && (
+        <DeviceIndexerModal
+          deviceRoots={deviceRoots}
+          isIndexing={isIndexing}
+          progress={indexProgress}
+          lastSummary={lastIndexSummary}
+          onLinkAndIndexPreset={handleLinkAndIndexPreset}
+          onIndexFallbackFolderFiles={(files, sourceLabel, filters) =>
+            void handleIndexFiles(files, sourceLabel, undefined, filters)
+          }
+          onSyncAllDeviceRoots={(filters) => void handleSyncAllDeviceRoots(filters)}
+          onSyncSingleRoot={(rootId, filters) => void handleSyncSingleRoot(rootId, filters)}
+          onRemoveRoot={(rootId) => void handleRemoveDeviceRoot(rootId)}
+          onCancelIndexing={handleCancelIndexing}
+          onClose={() => setShowDeviceIndexer(false)}
+        />
+      )}
+
+      {/* Floating Toast */}
       {toastMsg && (
         <div
           role="status"

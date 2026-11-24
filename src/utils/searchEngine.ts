@@ -1,4 +1,9 @@
 import { ScanDocument, SearchMode } from '../types/filelens';
+import {
+  chunkDocumentPages,
+  cosineSimilarity,
+  generateEmbedding,
+} from './embeddingEngine';
 
 export interface SearchMatchItem {
   doc: ScanDocument;
@@ -6,10 +11,11 @@ export interface SearchMatchItem {
   snippet: string;
   matchCount: number;
   score: number;
+  semanticSimilarity?: number;
   matchedTerms: string[];
 }
 
-// Bilingual / Hinglish & concept synonyms inspired by FileLensMobile MultilingualEngine
+// Bilingual / Hinglish & concept synonyms matching FileLensMobile MultilingualEngine
 const CONCEPT_EXPANSIONS: Record<string, string[]> = {
   bill: ['invoice', 'receipt', 'subtotal', 'paid', 'amount', 'tax', 'kharcha', 'raseed'],
   invoice: ['bill', 'receipt', 'paid', 'subtotal', 'due'],
@@ -31,7 +37,10 @@ function escapeRegExp(str: string): string {
 
 function buildCombinedText(doc: ScanDocument): string {
   const pageText = doc.pages.map((p) => p.ocrText).join('\n');
-  return `${doc.title}\n${doc.tags.join(' ')}\n${pageText}`;
+  const pathMeta = [doc.sourcePath, doc.fileExtension ? `.${doc.fileExtension}` : '']
+    .filter(Boolean)
+    .join(' ');
+  return `${doc.title}\n${pathMeta}\n${doc.tags.join(' ')}\n${pageText}`;
 }
 
 export function runDocumentSearch(
@@ -44,14 +53,60 @@ export function runDocumentSearch(
 
   const results: SearchMatchItem[] = [];
 
+  // Precompute 384-dim query vector once for Natural Language semantic mode
+  const queryVector = mode === 'natural' ? generateEmbedding(query) : null;
+
   for (const doc of docs) {
     const fullText = buildCombinedText(doc);
     let bestPageIdx = 0;
     let totalMatches = 0;
     let score = 0;
+    let semanticSimilarity: number | undefined;
     let matchedTerms: string[] = [];
+    let bestChunkText: string | null = null;
 
-    if (mode === 'exact') {
+    if (mode === 'natural' && queryVector) {
+      // Real 384-dimensional chunk cosine similarity (ported from FileLensMobile SearchEngine.kt)
+      const chunks = chunkDocumentPages(doc.pages);
+      let bestSim = cosineSimilarity(
+        queryVector,
+        generateEmbedding(`${doc.title} ${doc.sourcePath ?? ''} ${doc.fileExtension ?? ''} ${doc.tags.join(' ')}`)
+      );
+
+      for (const chunk of chunks) {
+        const chunkSim = cosineSimilarity(queryVector, generateEmbedding(chunk.text));
+        if (chunkSim > bestSim) {
+          bestSim = chunkSim;
+          bestPageIdx = chunk.pageIndex;
+          bestChunkText = chunk.text;
+        }
+      }
+
+      // Also check keyword overlap for snippet highlighting
+      const rawTerms = query
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((t) => t.length >= 2 && !['the', 'for', 'and', 'with', 'show', 'find', 'my', 'me', 'all'].includes(t));
+      const expanded = new Set<string>(rawTerms);
+      for (const t of rawTerms) {
+        CONCEPT_EXPANSIONS[t]?.forEach((s) => expanded.add(s));
+      }
+
+      const lower = fullText.toLowerCase();
+      for (const term of expanded) {
+        if (lower.includes(term)) {
+          matchedTerms.push(term);
+          const m = fullText.match(new RegExp(escapeRegExp(term), 'gi'));
+          totalMatches += m ? m.length : 1;
+        }
+      }
+
+      if (bestSim >= 0.14 || totalMatches > 0) {
+        semanticSimilarity = Math.min(0.99, Math.max(0.15, bestSim));
+        score = bestSim * 120 + totalMatches * 8;
+        if (totalMatches === 0) totalMatches = 1;
+      }
+    } else if (mode === 'exact') {
       const rx = new RegExp(escapeRegExp(query), 'gi');
       const matches = fullText.match(rx);
       if (matches && matches.length > 0) {
@@ -105,7 +160,6 @@ export function runDocumentSearch(
           i += 2;
           continue;
         }
-        // Lookahead for OR
         if (tokens[i + 1] === 'OR') {
           i++;
           continue;
@@ -124,7 +178,7 @@ export function runDocumentSearch(
         score = 88 + totalMatches * 10;
       }
     } else {
-      // Quick Search (partial + concept expansion) or Natural Language (token + concept scoring)
+      // Quick Search (partial + concept expansion)
       const rawTerms = query
         .toLowerCase()
         .split(/\s+/)
@@ -151,22 +205,23 @@ export function runDocumentSearch(
     }
 
     if (totalMatches > 0) {
-      // Find best matching page for jump-to-page
-      let bestPageScore = -1;
-      doc.pages.forEach((pg, idx) => {
-        const pLower = pg.ocrText.toLowerCase();
-        const hits = matchedTerms.reduce((acc, t) => acc + (pLower.includes(t.toLowerCase()) ? 1 : 0), 0);
-        if (hits > bestPageScore) {
-          bestPageScore = hits;
-          bestPageIdx = idx;
-        }
-      });
+      if (mode !== 'natural') {
+        let bestPageScore = -1;
+        doc.pages.forEach((pg, idx) => {
+          const pLower = pg.ocrText.toLowerCase();
+          const hits = matchedTerms.reduce((acc, t) => acc + (pLower.includes(t.toLowerCase()) ? 1 : 0), 0);
+          if (hits > bestPageScore) {
+            bestPageScore = hits;
+            bestPageIdx = idx;
+          }
+        });
+      }
 
-      const pageOcr = doc.pages[bestPageIdx]?.ocrText || fullText;
+      const pageOcr = bestChunkText || doc.pages[bestPageIdx]?.ocrText || fullText;
       const firstTerm = matchedTerms[0] || query;
       const pos = pageOcr.toLowerCase().indexOf(firstTerm.toLowerCase());
-      const start = Math.max(0, pos - 56);
-      const end = Math.min(pageOcr.length, (pos === -1 ? 0 : pos) + 150);
+      const start = Math.max(0, pos === -1 ? 0 : pos - 56);
+      const end = Math.min(pageOcr.length, (pos === -1 ? 0 : pos) + 165);
       const snippet = (start > 0 ? '…' : '') + pageOcr.slice(start, end).trim() + (end < pageOcr.length ? '…' : '');
 
       results.push({
@@ -175,6 +230,7 @@ export function runDocumentSearch(
         snippet,
         matchCount: totalMatches,
         score,
+        semanticSimilarity,
         matchedTerms,
       });
     }
@@ -199,6 +255,7 @@ export function exportSearchResults(
             title: r.doc.title,
             page: r.pageIndex + 1,
             matches: r.matchCount,
+            semanticScore: r.semanticSimilarity ? Math.round(r.semanticSimilarity * 100) : undefined,
             tags: r.doc.tags,
             snippet: r.snippet,
           })),

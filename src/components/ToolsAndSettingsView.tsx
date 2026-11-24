@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
+  CopyCheck,
   Download,
   HardDrive,
   Minimize2,
@@ -12,6 +13,9 @@ import {
 import {
   AppPreferences,
   BatchAutoPace,
+  DeviceIndexSummary,
+  IndexProgress,
+  IndexStats,
   PdfCompressPreset,
   PdfPageSizePreset,
   ScanDocument,
@@ -19,12 +23,24 @@ import {
 } from '../types/filelens';
 import { NAMING_TEMPLATES, SCAN_FILTERS } from '../data/seedData';
 import { formatBytes, triggerFileDownload } from '../utils/formatters';
+import { findSemanticDuplicates } from '../utils/smartTaxonomy';
+import { SmartIndexingBar } from './SmartIndexingBar';
 
 interface ToolsAndSettingsViewProps {
   documents: ScanDocument[];
   preferences: AppPreferences;
+  indexStats: IndexStats;
+  linkedDeviceRootsCount: number;
+  isIndexing: boolean;
+  indexProgress: IndexProgress | null;
+  lastIndexSummary: DeviceIndexSummary | null;
+  onOpenDeviceIndexer: () => void;
+  onIndexFiles: (files: File[], sourceLabel: string) => void;
+  onRunDeltaReindex: () => void;
+  onCancelIndexing: () => void;
   onUpdatePreferences: (next: AppPreferences) => void;
   onBatchCompressPdfs: (preset: PdfCompressPreset) => { savedBytes: number; count: number };
+  onDeleteDocument: (docId: string) => void;
   onExportWorkspaceBackup: () => string;
   onImportWorkspaceBackup: (json: string) => boolean;
   onResetDemoWorkspace: () => void;
@@ -45,8 +61,18 @@ const PDF_COMPRESS_OPTIONS: {
 export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
   documents,
   preferences,
+  indexStats,
+  linkedDeviceRootsCount,
+  isIndexing,
+  indexProgress,
+  lastIndexSummary,
+  onOpenDeviceIndexer,
+  onIndexFiles,
+  onRunDeltaReindex,
+  onCancelIndexing,
   onUpdatePreferences,
   onBatchCompressPdfs,
+  onDeleteDocument,
   onExportWorkspaceBackup,
   onImportWorkspaceBackup,
   onResetDemoWorkspace,
@@ -59,11 +85,12 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
   const storageStats = useMemo(() => {
     const totalBytes = documents.reduce((acc, d) => acc + d.sizeBytes, 0);
     const totalPages = documents.reduce((acc, d) => acc + d.pages.length, 0);
-    const largeDocs = [...documents].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 4);
     const selectedOpt = PDF_COMPRESS_OPTIONS.find((o) => o.id === compressPreset)!;
     const estSavings = Math.round(totalBytes * (1 - selectedOpt.ratio));
-    return { totalBytes, totalPages, largeDocs, estSavings };
+    return { totalBytes, totalPages, estSavings };
   }, [documents, compressPreset]);
+
+  const semanticDuplicates = useMemo(() => findSemanticDuplicates(documents, 0.8), [documents]);
 
   const handleCompressAll = () => {
     const { savedBytes, count } = onBatchCompressPdfs(compressPreset);
@@ -99,15 +126,28 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-          Tools &amp; Preferences
+          Tools, Indexing &amp; Preferences
         </h1>
         <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-          Space Cleaner, Smart PDF Compressor, Genius Scan defaults &amp; offline backup
+          Smart Indexing engine, Semantic Duplicate Finder, Batch PDF Compressor &amp; Genius Scan defaults
         </p>
       </div>
 
+      {/* Full Universal Smart Indexing Control Panel */}
+      <SmartIndexingBar
+        stats={indexStats}
+        linkedDeviceRootsCount={linkedDeviceRootsCount}
+        isIndexing={isIndexing}
+        progress={indexProgress}
+        lastSummary={lastIndexSummary}
+        onOpenDeviceIndexer={onOpenDeviceIndexer}
+        onIndexFiles={onIndexFiles}
+        onRunDeltaReindex={onRunDeltaReindex}
+        onCancelIndexing={onCancelIndexing}
+      />
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left Column: Space Cleaner & Smart PDF Compressor */}
+        {/* Left Column: Space Cleaner, Compressor & Semantic Clones */}
         <div className="space-y-5">
           <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-4">
             <div className="flex items-center justify-between">
@@ -120,7 +160,6 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               </span>
             </div>
 
-            {/* Clean proportional bar */}
             <div className="h-3 rounded-full bg-slate-100 dark:bg-[#2C2C2E] overflow-hidden flex">
               <div
                 className="bg-orange-600 h-full transition-all"
@@ -215,6 +254,59 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               Optimize All {documents.length} PDF(s)
             </button>
           </section>
+
+          {/* Semantic Clones & Near-Duplicates Detector (384-dim Cosine Similarity) */}
+          <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CopyCheck className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                <h2 className="text-sm font-bold">
+                  Semantic Duplicate Detector ({semanticDuplicates.length})
+                </h2>
+              </div>
+              <span className="text-[11px] font-mono text-slate-500">384-dim cosine ≥ 80%</span>
+            </div>
+
+            {semanticDuplicates.length === 0 ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                No near-duplicate documents detected across your indexed vault.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {semanticDuplicates.map((group) => (
+                  <div
+                    key={group.groupId}
+                    className="rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3 space-y-2 border border-slate-200/70 dark:border-white/8"
+                  >
+                    <div className="text-xs font-mono font-semibold text-orange-600 dark:text-orange-400">
+                      {Math.round(group.similarity * 100)}% semantic overlap
+                    </div>
+                    {group.documents.map((doc, idx) => (
+                      <div key={doc.id} className="flex items-center justify-between gap-2 text-xs">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-800 dark:text-slate-100 truncate">
+                            {doc.title}
+                          </div>
+                          <div className="text-slate-500 font-mono tabular-nums">
+                            {idx === 0 ? 'Primary copy' : 'Duplicate copy'} · {formatBytes(doc.sizeBytes)}
+                          </div>
+                        </div>
+                        {idx > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteDocument(doc.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 font-semibold shrink-0"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
         {/* Right Column: Scanner Defaults, Theme & Offline Backup */}
@@ -222,7 +314,6 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
           <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-4">
             <h2 className="text-sm font-bold">Scanner &amp; Appearance</h2>
 
-            {/* Theme Switch */}
             <div className="flex items-center justify-between gap-4">
               <div>
                 <div className="text-sm font-medium">Appearance</div>
@@ -258,7 +349,6 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               </div>
             </div>
 
-            {/* Default Filter */}
             <div className="pt-3 border-t border-slate-100 dark:border-white/8">
               <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
                 Default Enhancement Filter
@@ -283,7 +373,6 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               </div>
             </div>
 
-            {/* Default Page Size & Batch Pace */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
               <div>
                 <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
@@ -325,7 +414,6 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               </div>
             </div>
 
-            {/* Naming Template */}
             <div>
               <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
                 Automated Naming Template
@@ -349,7 +437,7 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               <div>
                 <div className="text-sm font-medium">Searchable OCR Text Layer</div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Automatically index text on newly scanned PDFs
+                  Run on-device Tesseract OCR on all newly scanned &amp; imported pages
                 </div>
               </div>
               <input
@@ -366,11 +454,10 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
             </label>
           </section>
 
-          {/* Local Backup & Restore */}
           <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-3">
             <h2 className="text-sm font-bold">Offline Workspace Backup</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Export or restore all documents, page edits, folders, voice checklists, and saved searches as portable JSON.
+              Export or restore all indexed documents, page edits, folders, voice checklists, and saved searches as portable JSON.
             </p>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
