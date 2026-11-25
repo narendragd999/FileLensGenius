@@ -238,13 +238,13 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex flex-col bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-slate-100"
+      className="fixed inset-0 h-[100dvh] max-h-[100dvh] w-full overflow-hidden z-40 flex flex-col bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-slate-100"
       role="dialog"
       aria-modal="true"
       aria-label={doc.title}
     >
       {/* Top iOS Reader Toolbar */}
-      <header className="sticky top-0 z-20 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/10 px-3 sm:px-5 h-14 flex items-center justify-between gap-2 shrink-0">
+      <header className="shrink-0 z-20 pt-safe bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/10 px-3 sm:px-5 min-h-[52px] py-1.5 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <button
             onClick={onClose}

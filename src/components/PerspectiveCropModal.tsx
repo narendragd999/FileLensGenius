@@ -97,13 +97,13 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-[#0C0C0E] text-white"
+      className="fixed inset-0 h-[100dvh] max-h-[100dvh] w-full overflow-hidden z-50 flex flex-col bg-[#0C0C0E] text-white"
       role="dialog"
       aria-modal="true"
       aria-label={`Edit Page ${pageNumber}`}
     >
       {/* Top iOS Studio Bar */}
-      <div className="flex items-center justify-between px-4 h-14 border-b border-white/10 shrink-0">
+      <div className="shrink-0 pt-safe flex items-center justify-between px-4 min-h-[52px] py-1.5 border-b border-white/10">
         <button
           onClick={onClose}
           className="min-h-[44px] min-w-[44px] flex items-center gap-1.5 text-sm font-medium text-white/80 hover:text-white transition-colors"

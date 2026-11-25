@@ -17,7 +17,6 @@ import {
   AppTab,
   DeviceIndexFilters,
   DeviceIndexSummary,
-  DeviceRootPreset,
   DeviceStorageRoot,
   DocFolder,
   DocumentPage,
@@ -49,11 +48,15 @@ import {
 } from './utils/smartIndexer';
 import {
   clearAllStoredDeviceRoots,
-  deleteStoredDeviceRoot,
+  DEFAULT_DEVICE_INDEX_FILTERS,
+  detectDeviceRuntime,
   ensureDirectoryReadPermission,
+  getAndroidAllFilesPermissionStatus,
   getStoredDeviceRootHandle,
   listStoredDeviceRoots,
   pickAndLinkDeviceRoot,
+  requestAndroidAllFilesAccess,
+  triggerAndroidNativeDeviceIndex,
   updateStoredDeviceRootStats,
   walkDeviceDirectoryHandle,
 } from './utils/deviceRoots';
@@ -65,10 +68,15 @@ import { ToolsAndSettingsView } from './components/ToolsAndSettingsView';
 import { LiveScannerModal } from './components/LiveScannerModal';
 import { PageOrganizerModal } from './components/PageOrganizerModal';
 import { PdfViewerModal } from './components/PdfViewerModal';
-import { DeviceIndexerModal } from './components/DeviceIndexerModal';
+import {
+  DEVICE_DIR_INPUT_ID,
+  DEVICE_FILES_INPUT_ID,
+  IndexDeviceTrigger,
+} from './components/SmartIndexingBar';
 
 export default function App() {
   const emptyInitial = useMemo(() => createEmptyVaultState(), []);
+  const runtime = useMemo(() => detectDeviceRuntime(), []);
   const [documents, setDocuments] = useState<ScanDocument[]>(emptyInitial.documents);
   const [folders, setFolders] = useState<DocFolder[]>(emptyInitial.folders);
   const [voiceNotes, setVoiceNotes] = useState<VoiceNote[]>(emptyInitial.voiceNotes);
@@ -77,12 +85,15 @@ export default function App() {
   const [preferences, setPreferences] = useState<AppPreferences>(emptyInitial.preferences);
   const [isVaultHydrated, setIsVaultHydrated] = useState<boolean>(false);
 
-  // Smart Indexing & Full-Device Storage Roots state
+  // Smart Indexing & Full-Device Storage state
   const [isIndexing, setIsIndexing] = useState<boolean>(false);
   const [indexProgress, setIndexProgress] = useState<IndexProgress | null>(null);
   const [lastIndexSummary, setLastIndexSummary] = useState<DeviceIndexSummary | null>(null);
   const [deviceRoots, setDeviceRoots] = useState<DeviceStorageRoot[]>([]);
-  const [showDeviceIndexer, setShowDeviceIndexer] = useState<boolean>(false);
+  const [hasAllFilesPermission, setHasAllFilesPermission] = useState<boolean>(
+    () => getAndroidAllFilesPermissionStatus() === 'granted'
+  );
+  const pendingAutoIndexAfterGrantRef = useRef<boolean>(false);
   const indexAbortRef = useRef<AbortController | null>(null);
 
   const [activeTab, setActiveTab] = useState<AppTab>('documents');
@@ -352,35 +363,25 @@ export default function App() {
     }
   };
 
-  const handleLinkAndIndexPreset = async (
-    preset: DeviceRootPreset,
-    filters: DeviceIndexFilters
-  ): Promise<'linked' | 'cancelled' | 'fallback_needed'> => {
-    const res = await pickAndLinkDeviceRoot(preset);
-    if (res.status === 'cancelled') return 'cancelled';
-    if (res.status === 'fallback_needed') return 'fallback_needed';
-
-    const refreshed = await listStoredDeviceRoots();
-    setDeviceRoots(refreshed);
-    void runWalkAndIndexRoots([{ root: res.root, handle: res.handle }], `Device: ${res.root.name}`, filters);
-    return 'linked';
-  };
-
-  const handleSyncSingleRoot = async (rootId: string, filters: DeviceIndexFilters) => {
-    const root = deviceRoots.find((r) => r.id === rootId);
-    if (!root) return;
-    const handle = await getStoredDeviceRootHandle(rootId);
-    if (!handle) {
-      showToast(`Re-link "${root.name}" to grant browser read access`);
-      return;
-    }
-    const granted = await ensureDirectoryReadPermission(handle);
-    if (!granted) {
-      showToast(`Permission denied for "${root.name}"`);
-      return;
-    }
-    await runWalkAndIndexRoots([{ root, handle }], `Device: ${root.name}`, filters);
-  };
+  // Mirror FileLensMobile MainActivity.kt: auto-start full-device index right after user grants Android All Files Access
+  useEffect(() => {
+    if (!runtime.hasNativeAndroidBridge) return;
+    const onResumeCheck = () => {
+      const granted = getAndroidAllFilesPermissionStatus() === 'granted';
+      setHasAllFilesPermission(granted);
+      if (granted && pendingAutoIndexAfterGrantRef.current) {
+        pendingAutoIndexAfterGrantRef.current = false;
+        triggerAndroidNativeDeviceIndex(DEFAULT_DEVICE_INDEX_FILTERS);
+        showToast('All Files Access granted · Indexing & OCRing device…');
+      }
+    };
+    window.addEventListener('focus', onResumeCheck);
+    document.addEventListener('visibilitychange', onResumeCheck);
+    return () => {
+      window.removeEventListener('focus', onResumeCheck);
+      document.removeEventListener('visibilitychange', onResumeCheck);
+    };
+  }, [runtime.hasNativeAndroidBridge]);
 
   const handleSyncAllDeviceRoots = async (filters: DeviceIndexFilters) => {
     const ready: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[] = [];
@@ -391,16 +392,61 @@ export default function App() {
       if (granted) ready.push({ root, handle });
     }
     if (ready.length === 0) {
-      showToast('Grant folder permission or link a device storage root first');
+      // If stored permission expired, prompt user cleanly to pick storage again
+      const res = await pickAndLinkDeviceRoot('custom');
+      if (res.status === 'linked') {
+        const refreshed = await listStoredDeviceRoots();
+        setDeviceRoots(refreshed);
+        await runWalkAndIndexRoots(
+          [{ root: res.root, handle: res.handle }],
+          `Device: ${res.root.name}`,
+          filters
+        );
+      }
       return;
     }
-    await runWalkAndIndexRoots(ready, `Entire Device (${ready.length} roots)`, filters);
+    await runWalkAndIndexRoots(ready, `Entire Device (${ready.length} root${ready.length > 1 ? 's' : ''})`, filters);
   };
 
-  const handleRemoveDeviceRoot = async (rootId: string) => {
-    await deleteStoredDeviceRoot(rootId);
-    setDeviceRoots((prev) => prev.filter((r) => r.id !== rootId));
-    showToast('Unlinked device storage root');
+  /**
+   * Single 1-tap "Index Device" flow matching FileLensMobile:
+   * - Native Android APK: checks MANAGE_EXTERNAL_STORAGE, opens permission settings if needed, or crawls full storage immediately.
+   * - Desktop top-level Chrome/Edge: syncs linked roots immediately or opens showDirectoryPicker synchronously on first tap.
+   */
+  const handleOneTapIndexDevice = () => {
+    if (isIndexing) return;
+
+    if (runtime.hasNativeAndroidBridge) {
+      const granted = getAndroidAllFilesPermissionStatus() === 'granted';
+      setHasAllFilesPermission(granted);
+      if (granted) {
+        triggerAndroidNativeDeviceIndex(DEFAULT_DEVICE_INDEX_FILTERS);
+        showToast('Scanning & OCRing entire device…');
+      } else {
+        pendingAutoIndexAfterGrantRef.current = true;
+        requestAndroidAllFilesAccess();
+        showToast('Enable All Files Access to scan your device');
+      }
+      return;
+    }
+
+    if (runtime.canUseDirectoryPickerDirect) {
+      if (deviceRoots.length > 0) {
+        void handleSyncAllDeviceRoots(DEFAULT_DEVICE_INDEX_FILTERS);
+      } else {
+        void pickAndLinkDeviceRoot('custom').then(async (res) => {
+          if (res.status === 'linked') {
+            const refreshed = await listStoredDeviceRoots();
+            setDeviceRoots(refreshed);
+            await runWalkAndIndexRoots(
+              [{ root: res.root, handle: res.handle }],
+              `Device: ${res.root.name}`,
+              DEFAULT_DEVICE_INDEX_FILTERS
+            );
+          }
+        });
+      }
+    }
   };
 
   const handleRunDeltaReindex = async () => {
@@ -499,9 +545,9 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen flex bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-[#F5F5F7]">
+    <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden flex bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-[#F5F5F7]">
       {/* Desktop Left Sidebar Rail */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-68 xl:w-72 shrink-0 bg-white dark:bg-[#1C1C1E] border-r border-slate-200/80 dark:border-white/10 sticky top-0 h-screen">
+      <aside className="hidden lg:flex lg:flex-col lg:w-68 xl:w-72 shrink-0 bg-white dark:bg-[#1C1C1E] border-r border-slate-200/80 dark:border-white/10 h-full overflow-hidden">
         <div className="p-5 flex items-center justify-between">
           <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
             FileLens Scan
@@ -532,18 +578,14 @@ export default function App() {
             <Camera className="w-4 h-4" />
             <span>Scan Document</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setShowDeviceIndexer(true)}
+          <IndexDeviceTrigger
+            disabled={isIndexing}
+            onOneTapIndexDevice={handleOneTapIndexDevice}
             className="w-full h-10 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 text-slate-800 dark:text-slate-100 hover:text-orange-600 text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
           >
             <HardDrive className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-            <span>
-              {deviceRoots.length > 0
-                ? `Index Device (${deviceRoots.length})`
-                : 'Index Entire Device'}
-            </span>
-          </button>
+            <span>{deviceRoots.length > 0 || hasAllFilesPermission ? 'Index All' : 'Index Device'}</span>
+          </IndexDeviceTrigger>
         </div>
 
         {/* Primary Navigation Links */}
@@ -640,59 +682,61 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main Responsive Content Column */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Ultra-Compact Mobile Top Bar (< 1024px) */}
-        <header className="lg:hidden sticky top-0 z-30 h-11 px-3 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-white/10 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-bold tracking-tight whitespace-nowrap">
-              FileLens Scan
-            </span>
-            <span className="text-[11px] font-mono tabular-nums text-slate-400 dark:text-slate-500 truncate">
-              {documents.length} files
-            </span>
-          </div>
-          <div className="flex items-center gap-0.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowDeviceIndexer(true)}
-              aria-label="Index entire device"
-              className="h-8 px-2 rounded-lg flex items-center gap-1 text-[11px] font-semibold text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/40"
-            >
-              <HardDrive className="w-3.5 h-3.5" />
-              <span>{deviceRoots.length > 0 ? `Sync (${deviceRoots.length})` : 'Device'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('settings')}
-              aria-label="Tools and Preferences"
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                activeTab === 'settings'
-                  ? 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/40'
-                  : 'text-slate-600 dark:text-slate-300'
-              }`}
-            >
-              <Settings className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                setPreferences((p) => ({ ...p, theme: p.theme === 'dark' ? 'light' : 'dark' }))
-              }
-              aria-label="Toggle light and dark theme"
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-300"
-            >
-              {preferences.theme === 'dark' ? (
-                <Sun className="w-4 h-4" />
-              ) : (
-                <Moon className="w-4 h-4" />
-              )}
-            </button>
+      {/* Main Responsive Content Column — strictly fitted inside 100dvh */}
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        {/* Locked Mobile Top Bar (< 1024px) with safe-area top inset */}
+        <header className="lg:hidden shrink-0 z-30 pt-safe bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-white/10">
+          <div className="h-11 px-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-bold tracking-tight whitespace-nowrap">
+                FileLens Scan
+              </span>
+              <span className="text-[11px] font-mono tabular-nums text-slate-400 dark:text-slate-500 truncate">
+                {documents.length} files
+              </span>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <IndexDeviceTrigger
+                disabled={isIndexing}
+                onOneTapIndexDevice={handleOneTapIndexDevice}
+                ariaLabel="Index entire device"
+                className="h-8 px-2.5 rounded-lg inline-flex items-center gap-1 text-[11px] font-semibold text-white bg-orange-600 hover:bg-orange-700"
+              >
+                <HardDrive className="w-3.5 h-3.5" />
+                <span>Index</span>
+              </IndexDeviceTrigger>
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                aria-label="Tools and Preferences"
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                  activeTab === 'settings'
+                    ? 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/40'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setPreferences((p) => ({ ...p, theme: p.theme === 'dark' ? 'light' : 'dark' }))
+                }
+                aria-label="Toggle light and dark theme"
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-300"
+              >
+                {preferences.theme === 'dark' ? (
+                  <Sun className="w-4 h-4" />
+                ) : (
+                  <Moon className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           </div>
         </header>
 
-        {/* Scrollable Workspace Body — Edge-to-edge tight padding on small mobile screens */}
-        <main className="flex-1 px-2.5 sm:px-6 lg:px-8 py-2 sm:py-5 pb-20 lg:pb-8">
+        {/* Scrollable Workspace Body — constrained cleanly between top bar and bottom bar */}
+        <main className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-2.5 sm:px-6 lg:px-8 py-2 sm:py-4 pb-6">
           <div className="max-w-6xl mx-auto">
             {activeTab === 'documents' && (
               <DocumentsView
@@ -701,10 +745,11 @@ export default function App() {
                 selectedFolderId={selectedFolderId}
                 indexStats={indexStats}
                 linkedDeviceRootsCount={deviceRoots.length}
+                hasAllFilesPermission={hasAllFilesPermission}
                 isIndexing={isIndexing}
                 indexProgress={indexProgress}
                 lastIndexSummary={lastIndexSummary}
-                onOpenDeviceIndexer={() => setShowDeviceIndexer(true)}
+                onOneTapIndexDevice={handleOneTapIndexDevice}
                 onIndexFiles={handleIndexFiles}
                 onRunDeltaReindex={handleRunDeltaReindex}
                 onCancelIndexing={handleCancelIndexing}
@@ -759,10 +804,11 @@ export default function App() {
                 savedSearches={savedSearches}
                 indexStats={indexStats}
                 linkedDeviceRootsCount={deviceRoots.length}
+                hasAllFilesPermission={hasAllFilesPermission}
                 isIndexing={isIndexing}
                 indexProgress={indexProgress}
                 lastIndexSummary={lastIndexSummary}
-                onOpenDeviceIndexer={() => setShowDeviceIndexer(true)}
+                onOneTapIndexDevice={handleOneTapIndexDevice}
                 onIndexFiles={handleIndexFiles}
                 onRunDeltaReindex={handleRunDeltaReindex}
                 onCancelIndexing={handleCancelIndexing}
@@ -857,10 +903,11 @@ export default function App() {
                 preferences={preferences}
                 indexStats={indexStats}
                 linkedDeviceRootsCount={deviceRoots.length}
+                hasAllFilesPermission={hasAllFilesPermission}
                 isIndexing={isIndexing}
                 indexProgress={indexProgress}
                 lastIndexSummary={lastIndexSummary}
-                onOpenDeviceIndexer={() => setShowDeviceIndexer(true)}
+                onOneTapIndexDevice={handleOneTapIndexDevice}
                 onIndexFiles={handleIndexFiles}
                 onRunDeltaReindex={handleRunDeltaReindex}
                 onCancelIndexing={handleCancelIndexing}
@@ -921,10 +968,10 @@ export default function App() {
           </div>
         </main>
 
-        {/* Compact Mobile Fixed Bottom Navigation Bar with Centered Genius Scan Orange Camera FAB */}
+        {/* Compact Mobile Bottom Navigation Bar — seated inside 100dvh flex shell */}
         <nav
           aria-label="Primary navigation"
-          className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-t border-slate-200/80 dark:border-white/10 pb-safe"
+          className="lg:hidden shrink-0 relative z-30 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-t border-slate-200/80 dark:border-white/10 pb-safe overflow-visible"
         >
           <div className="grid grid-cols-5 items-center h-13 px-1">
             <MobileTabButton
@@ -1040,25 +1087,53 @@ export default function App() {
         />
       )}
 
-      {/* Full-Device Universal Indexer Modal */}
-      {showDeviceIndexer && (
-        <DeviceIndexerModal
-          deviceRoots={deviceRoots}
-          isIndexing={isIndexing}
-          progress={indexProgress}
-          lastSummary={lastIndexSummary}
-          onLinkAndIndexPreset={handleLinkAndIndexPreset}
-          onIndexFallbackFolderFiles={(files, sourceLabel, filters) =>
-            void handleIndexFiles(files, sourceLabel, undefined, filters)
-          }
-          onSyncAllDeviceRoots={(filters) => void handleSyncAllDeviceRoots(filters)}
-          onSyncSingleRoot={(rootId, filters) => void handleSyncSingleRoot(rootId, filters)}
-          onRemoveRoot={(rootId) => void handleRemoveDeviceRoot(rootId)}
-          onCancelIndexing={handleCancelIndexing}
-          onToast={showToast}
-          onClose={() => setShowDeviceIndexer(false)}
+      {/* Global Single-Button Native Pickers (guaranteed synchronous launch on Android, iOS, desktop & iframes) */}
+      {!runtime.isMobile && (
+        <input
+          id={DEVICE_DIR_INPUT_ID}
+          type="file"
+          multiple
+          // @ts-expect-error webkitdirectory enables recursive OS folder selection on desktop browsers
+          webkitdirectory=""
+          directory=""
+          className="sr-only"
+          onChange={(e) => {
+            const list = e.target.files;
+            if (list && list.length > 0) {
+              const files = Array.from(list);
+              const firstRel = (files[0] as File & { webkitRelativePath?: string })
+                .webkitRelativePath;
+              const rootName = firstRel ? firstRel.split('/')[0] : 'Device';
+              void handleIndexFiles(
+                files,
+                `Device: ${rootName}`,
+                undefined,
+                DEFAULT_DEVICE_INDEX_FILTERS
+              );
+            }
+            e.target.value = '';
+          }}
         />
       )}
+      <input
+        id={DEVICE_FILES_INPUT_ID}
+        type="file"
+        multiple
+        className="sr-only"
+        onChange={(e) => {
+          const list = e.target.files;
+          if (list && list.length > 0) {
+            const files = Array.from(list);
+            void handleIndexFiles(
+              files,
+              `Device (${files.length} files)`,
+              undefined,
+              DEFAULT_DEVICE_INDEX_FILTERS
+            );
+          }
+          e.target.value = '';
+        }}
+      />
 
       {/* Floating Toast */}
       {toastMsg && (

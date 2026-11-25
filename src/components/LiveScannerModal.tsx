@@ -1,12 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ArrowLeft,
+  ArrowRight,
   Camera,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Crop,
   Grid3X3,
   Image as ImageIcon,
   Loader2,
   Lock,
+  Plus,
   RefreshCw,
   RotateCw,
   Sliders,
@@ -122,6 +127,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const [cardCategory, setCardCategory] = useState<SmartCardCategory>('Govt IDs');
   const [tagInput, setTagInput] = useState<string>(initialMode === 'idcard' ? 'ID Card, 2-in-1 A4' : 'Scanned');
   const [editingPageIdx, setEditingPageIdx] = useState<number | null>(null);
+  const [activeReviewIdx, setActiveReviewIdx] = useState<number>(0);
+  const [retakeTargetIdx, setRetakeTargetIdx] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -129,6 +136,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const analysisCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const nativeCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const touchStartXRef = useRef<number | null>(null);
+  const cameraStripEndRef = useRef<HTMLDivElement | null>(null);
+  const activeThumbRef = useRef<HTMLButtonElement | null>(null);
 
   // Refs for real-time edge stability & anti-duplicate fingerprint gate
   const lastQuadRef = useRef<NormalizedQuad | null>(null);
@@ -138,6 +148,50 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const waitingPageSwapRef = useRef<boolean>(false);
   const lastAutoShotMsRef = useRef<number>(0);
   const captureLockRef = useRef<boolean>(false);
+
+  // Keep activeReviewIdx clamped and return to camera if all pages were removed in review
+  useEffect(() => {
+    if (capturedPages.length === 0) {
+      setActiveReviewIdx(0);
+      if (phase === 'review') {
+        setPhase('camera');
+      }
+      return;
+    }
+    if (activeReviewIdx >= capturedPages.length) {
+      setActiveReviewIdx(capturedPages.length - 1);
+    }
+  }, [capturedPages.length, activeReviewIdx, phase]);
+
+  // Auto-scroll camera filmstrip to the latest captured page
+  useEffect(() => {
+    if (phase === 'camera' && capturedPages.length > 0) {
+      cameraStripEndRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
+    }
+  }, [capturedPages.length, phase]);
+
+  // Auto-scroll active page thumbnail into view in review mode
+  useEffect(() => {
+    if (phase === 'review') {
+      activeThumbRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+  }, [activeReviewIdx, phase]);
+
+  // Keyboard arrow navigation across scanned pages in review phase
+  useEffect(() => {
+    if (phase !== 'review' || editingPageIdx !== null) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'ArrowLeft') {
+        setActiveReviewIdx((i) => Math.max(0, i - 1));
+      } else if (e.key === 'ArrowRight') {
+        setActiveReviewIdx((i) => Math.min(capturedPages.length - 1, i + 1));
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [phase, editingPageIdx, capturedPages.length]);
 
   // Stop any active camera tracks safely
   const stopCameraTracks = useCallback(() => {
@@ -353,14 +407,25 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       };
 
       setCapturedPages((prev) => {
+        if (retakeTargetIdx !== null && retakeTargetIdx < prev.length) {
+          const targetIdx = retakeTargetIdx;
+          const replaced = prev.map((item, i) => (i === targetIdx ? newPage : item));
+          setRetakeTargetIdx(null);
+          setActiveReviewIdx(targetIdx);
+          onToast(`Replaced Page ${targetIdx + 1} · Extracting OCR…`);
+          setTimeout(() => setPhase('review'), 140);
+          return replaced;
+        }
         const next = scanMode === 'single' ? [newPage] : [...prev, newPage];
+        const newIdx = next.length - 1;
+        setActiveReviewIdx(newIdx);
         if (scanMode === 'single') {
           setTimeout(() => setPhase('review'), 160);
         } else if (scanMode === 'idcard' && next.length >= 2) {
           onToast('Captured Front & Back · Ready for 2-in-1 A4 ID composite');
           setTimeout(() => setPhase('review'), 200);
         } else {
-          onToast(`Captured live Page ${next.length} · Extracting OCR…`);
+          onToast(`Captured Page ${next.length} · Tap thumbnail to preview`);
         }
         return next;
       });
@@ -371,7 +436,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         captureLockRef.current = false;
       }, 450);
     },
-    [activeFilter, batchPace, detectedQuad, enrichPageWithRealOcr, onToast, scanMode]
+    [activeFilter, batchPace, detectedQuad, enrichPageWithRealOcr, onToast, retakeTargetIdx, scanMode]
   );
 
   // Real-time Live Document Edge Tracking & Smart Anti-Duplicate Auto-Capture Loop (~160ms interval)
@@ -499,10 +564,24 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       )
     );
 
+    if (retakeTargetIdx !== null && retakeTargetIdx < capturedPages.length) {
+      const targetIdx = retakeTargetIdx;
+      const replacement = loadedPages[0];
+      setCapturedPages((prev) => prev.map((item, i) => (i === targetIdx ? replacement : item)));
+      setRetakeTargetIdx(null);
+      setActiveReviewIdx(targetIdx);
+      setPhase('review');
+      onToast(`Replaced Page ${targetIdx + 1} · Running OCR & edge detection…`);
+      enrichPageWithRealOcr(replacement.id, replacement.imageUrl);
+      e.target.value = '';
+      return;
+    }
+
     const next = scanMode === 'single' ? [loadedPages[0]] : [...capturedPages, ...loadedPages];
     setCapturedPages(next);
+    setActiveReviewIdx(scanMode === 'single' ? 0 : Math.max(0, next.length - loadedPages.length));
     setPhase('review');
-    onToast(`Added ${loadedPages.length} real photo${loadedPages.length > 1 ? 's' : ''} · Running OCR & edge detection…`);
+    onToast(`Added ${loadedPages.length} photo${loadedPages.length > 1 ? 's' : ''} · Running OCR & edge detection…`);
 
     loadedPages.forEach((pg) => enrichPageWithRealOcr(pg.id, pg.imageUrl));
     e.target.value = '';
@@ -619,6 +698,46 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const paceLabel =
     batchPace === 'wait_page' ? 'Wait Page' : batchPace === 'delay_3s' ? '3s Auto' : '5s Auto';
 
+  const safeReviewIdx = Math.min(activeReviewIdx, Math.max(0, capturedPages.length - 1));
+  const activeReviewPage = capturedPages[safeReviewIdx] ?? null;
+
+  const handleRotatePage = (idx: number) => {
+    setCapturedPages((prev) =>
+      prev.map((item, i) =>
+        i === idx
+          ? { ...item, rotation: (((item.rotation + 90) % 360) as 0 | 90 | 180 | 270) }
+          : item
+      )
+    );
+  };
+
+  const handleDeletePage = (idx: number) => {
+    setCapturedPages((prev) => prev.filter((_, i) => i !== idx));
+    setActiveReviewIdx((curr) => {
+      if (idx < curr) return curr - 1;
+      if (idx === curr) return Math.max(0, curr - 1);
+      return curr;
+    });
+  };
+
+  const handleMoveActivePage = (direction: -1 | 1) => {
+    const target = safeReviewIdx + direction;
+    if (target < 0 || target >= capturedPages.length) return;
+    setCapturedPages((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(safeReviewIdx, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+    setActiveReviewIdx(target);
+  };
+
+  const handleOpenPreviewAt = (idx: number) => {
+    setRetakeTargetIdx(null);
+    setActiveReviewIdx(idx);
+    setPhase('review');
+  };
+
   if (phase === 'camera') {
     const q = detectedQuad;
     const quadPolyPoints = q
@@ -627,70 +746,91 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
     return (
       <div
-        className="fixed inset-0 z-50 flex flex-col bg-black text-white select-none"
+        className="fixed inset-0 h-[100dvh] max-h-[100dvh] w-full overflow-hidden z-50 flex flex-col bg-black text-white select-none"
         role="dialog"
         aria-modal="true"
         aria-label="Live Document Scanner"
       >
-        {/* Top Genius Scan iOS Camera Toolbar */}
-        <div className="flex items-center justify-between px-3 sm:px-4 h-14 bg-black/85 backdrop-blur-md border-b border-white/10 z-20 shrink-0">
-          <button
-            onClick={onClose}
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center text-white/90 hover:text-white"
-            aria-label="Close scanner"
-          >
-            <X className="w-6 h-6" />
-          </button>
+        {/* Top Genius Scan iOS Camera Toolbar (safe-area top protected) */}
+        <div className="shrink-0 pt-safe bg-black/85 backdrop-blur-md border-b border-white/10 z-20">
+          <div className="flex items-center justify-between px-2.5 sm:px-4 h-12 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (retakeTargetIdx !== null) {
+                  setRetakeTargetIdx(null);
+                  setPhase('review');
+                } else {
+                  onClose();
+                }
+              }}
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center text-white/90 hover:text-white rounded-lg"
+              aria-label={retakeTargetIdx !== null ? 'Cancel retake' : 'Close scanner'}
+            >
+              <X className="w-5 h-5" />
+            </button>
 
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <button
-              onClick={() => setFlashOn((f) => !f)}
-              className={`min-h-[38px] px-2.5 sm:px-3 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                flashOn ? 'bg-orange-600 text-white' : 'bg-white/12 text-white/85 hover:bg-white/20'
-              }`}
-            >
-              {flashOn ? <Zap className="w-3.5 h-3.5" /> : <ZapOff className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{flashOn ? 'Torch On' : 'Torch'}</span>
-            </button>
-            <button
-              onClick={() => setAutoCapture((a) => !a)}
-              className={`min-h-[38px] px-3 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                autoCapture ? 'bg-orange-600 text-white' : 'bg-white/12 text-white/85 hover:bg-white/20'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>{autoCapture ? 'Auto' : 'Manual'}</span>
-            </button>
-            {scanMode === 'batch' && (
-              <button
-                onClick={cycleBatchPace}
-                className="min-h-[38px] px-3 rounded-full text-xs font-semibold bg-white/12 text-white/85 hover:bg-white/20 transition-colors hidden sm:flex items-center"
-              >
-                {paceLabel}
-              </button>
+            {retakeTargetIdx !== null && (
+              <span className="px-2.5 py-1 rounded-full bg-orange-600/90 text-white text-[11px] font-semibold whitespace-nowrap">
+                Retaking Page {retakeTargetIdx + 1}
+              </span>
             )}
-            <button
-              onClick={handleSwitchCamera}
-              aria-label="Switch camera lens"
-              title="Switch camera"
-              className="min-h-[38px] min-w-[38px] rounded-full bg-white/12 text-white/85 hover:bg-white/20 flex items-center justify-center transition-colors"
-            >
-              <SwitchCamera className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setShowGrid((g) => !g)}
-              aria-label="Toggle composition grid"
-              className={`min-h-[38px] min-w-[38px] rounded-full flex items-center justify-center transition-colors ${
-                showGrid ? 'bg-white/20 text-white' : 'bg-white/10 text-white/60'
-              }`}
-            >
-              <Grid3X3 className="w-4 h-4" />
-            </button>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setFlashOn((f) => !f)}
+                className={`min-h-[34px] px-2.5 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-colors ${
+                  flashOn ? 'bg-orange-600 text-white' : 'bg-white/12 text-white/85 hover:bg-white/20'
+                }`}
+              >
+                {flashOn ? <Zap className="w-3.5 h-3.5" /> : <ZapOff className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{flashOn ? 'Torch On' : 'Torch'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAutoCapture((a) => !a)}
+                className={`min-h-[34px] px-2.5 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-colors ${
+                  autoCapture ? 'bg-orange-600 text-white' : 'bg-white/12 text-white/85 hover:bg-white/20'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{autoCapture ? 'Auto' : 'Manual'}</span>
+              </button>
+              {scanMode === 'batch' && (
+                <button
+                  type="button"
+                  onClick={cycleBatchPace}
+                  className="min-h-[34px] px-2.5 rounded-full text-[11px] font-semibold bg-white/12 text-white/85 hover:bg-white/20 transition-colors hidden sm:flex items-center"
+                >
+                  {paceLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleSwitchCamera}
+                aria-label="Switch camera lens"
+                title="Switch camera"
+                className="min-h-[34px] min-w-[34px] rounded-full bg-white/12 text-white/85 hover:bg-white/20 flex items-center justify-center transition-colors"
+              >
+                <SwitchCamera className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowGrid((g) => !g)}
+                aria-label="Toggle composition grid"
+                className={`min-h-[34px] min-w-[34px] rounded-full flex items-center justify-center transition-colors ${
+                  showGrid ? 'bg-white/20 text-white' : 'bg-white/10 text-white/60'
+                }`}
+              >
+                <Grid3X3 className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
 
         {/* REAL Live Camera Viewfinder */}
-        <div className="relative flex-1 overflow-hidden flex items-center justify-center bg-[#0C0C0E]">
+        <div className="relative flex-1 min-h-0 overflow-hidden flex items-center justify-center bg-[#0C0C0E]">
           {/* Always mount <video> so srcObject attaches immediately when stream opens */}
           <video
             ref={videoRef}
@@ -711,43 +851,41 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             </div>
           )}
 
-          {/* Denied or Unavailable Real Camera Recovery UI (Never silently fakes a dummy scan!) */}
+          {/* Denied or Unavailable Real Camera Recovery UI */}
           {(cameraStatus === 'denied' || cameraStatus === 'unavailable') && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center bg-[#121215]">
-              <div className="w-14 h-14 rounded-2xl bg-orange-600/20 text-orange-400 flex items-center justify-center">
-                <Camera className="w-7 h-7" />
+            <div className="absolute inset-0 overflow-y-auto flex flex-col items-center justify-center gap-3.5 p-5 text-center bg-[#121215]">
+              <div className="w-12 h-12 rounded-2xl bg-orange-600/20 text-orange-400 flex items-center justify-center shrink-0">
+                <Camera className="w-6 h-6" />
               </div>
-              <div className="space-y-1.5 max-w-sm">
-                <h3 className="text-base font-bold text-white">
+              <div className="space-y-1 max-w-sm">
+                <h3 className="text-sm font-bold text-white">
                   {cameraStatus === 'denied' ? 'Camera Permission Needed' : 'Live Camera Stream Unavailable'}
                 </h3>
                 <p className="text-xs text-white/65 leading-relaxed">{cameraErrorMsg}</p>
               </div>
-              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setCameraRetryKey((k) => k + 1)}
-                  className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold flex items-center gap-2"
+                  className="min-h-[40px] px-3.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold flex items-center gap-1.5"
                 >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>Retry Live Camera</span>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry Camera</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => nativeCameraInputRef.current?.click()}
-                  className="min-h-[42px] px-4 rounded-xl bg-white/12 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-2"
+                <label
+                  htmlFor="scanner-native-cam-input"
+                  className="min-h-[40px] px-3.5 rounded-xl bg-white/12 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Camera className="w-4 h-4 text-orange-400" />
-                  <span>Use Device Camera</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => galleryInputRef.current?.click()}
-                  className="min-h-[42px] px-4 rounded-xl bg-white/12 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-2"
+                  <Camera className="w-3.5 h-3.5 text-orange-400" />
+                  <span>Device Camera</span>
+                </label>
+                <label
+                  htmlFor="scanner-gallery-input"
+                  className="min-h-[40px] px-3.5 rounded-xl bg-white/12 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
-                  <ImageIcon className="w-4 h-4" />
+                  <ImageIcon className="w-3.5 h-3.5" />
                   <span>Import Photos</span>
-                </button>
+                </label>
               </div>
             </div>
           )}
@@ -784,15 +922,17 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   />
                 </svg>
               ) : scanMode === 'idcard' ? (
-                <div className="absolute inset-0 flex items-center justify-center p-8">
+                <div className="absolute inset-0 flex items-center justify-center p-6">
                   <div className="w-full max-w-md aspect-[1.586/1] border-2 border-dashed border-orange-400/90 bg-orange-500/8 rounded-xl" />
                 </div>
               ) : null}
 
               {/* Live Scanner Guidance Pill */}
-              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-full bg-black/75 backdrop-blur-md text-xs font-medium text-white whitespace-nowrap flex items-center gap-2">
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/75 backdrop-blur-md text-[11px] font-medium text-white whitespace-nowrap max-w-[92%] truncate">
                 {waitingPageSwap ? (
-                  <span>Page captured · Swap or turn sheet for next scan</span>
+                  <span>Page captured · Turn sheet for next scan</span>
+                ) : retakeTargetIdx !== null ? (
+                  <span>Align Page {retakeTargetIdx + 1} to replace</span>
                 ) : scanMode === 'idcard' ? (
                   <span>
                     {capturedPages.length === 0
@@ -816,28 +956,85 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           {shutterFlash && <div className="pointer-events-none absolute inset-0 bg-white/85 z-30" />}
         </div>
 
-        {/* Hidden Native Camera + Gallery File Inputs */}
+        {/* Accessible Native Camera + Gallery File Inputs (sr-only so mobile WebViews always trigger) */}
         <input
+          id="scanner-native-cam-input"
           ref={nativeCameraInputRef}
           type="file"
           accept="image/*"
           capture="environment"
-          className="hidden"
+          className="sr-only"
           onChange={handleFileCaptureOrImport}
         />
         <input
+          id="scanner-gallery-input"
           ref={galleryInputRef}
           type="file"
           accept="image/*"
-          multiple={scanMode !== 'single'}
-          className="hidden"
+          multiple={scanMode !== 'single' && retakeTargetIdx === null}
+          className="sr-only"
           onChange={handleFileCaptureOrImport}
         />
 
-        {/* Bottom Genius Scan Capture Dock */}
-        <div className="bg-black/95 border-t border-white/10 px-4 pt-3 pb-safe space-y-4 shrink-0">
-          {!isAppendMode && (
-            <div className="flex items-center justify-center gap-6 text-xs font-semibold">
+        {/* Live Captured Pages Filmstrip (FileLensMobile-style immediate preview & page jump) */}
+        {capturedPages.length > 0 && retakeTargetIdx === null && (
+          <div className="shrink-0 bg-[#0D0D10] border-t border-white/12 px-3 py-2">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-semibold text-white/80">
+                Scanned ({capturedPages.length}) · Tap any page to preview
+              </span>
+              <button
+                type="button"
+                onClick={() => handleOpenPreviewAt(capturedPages.length - 1)}
+                className="text-[11px] font-semibold text-orange-400 hover:text-orange-300"
+              >
+                Preview &amp; Save →
+              </button>
+            </div>
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+              {capturedPages.map((pg, idx) => {
+                const isLatest = idx === capturedPages.length - 1;
+                return (
+                  <div
+                    key={pg.id}
+                    className={`relative shrink-0 w-12 h-16 rounded-lg overflow-hidden border-2 bg-zinc-900 transition-all ${
+                      isLatest ? 'border-orange-500 ring-1 ring-orange-500/40' : 'border-white/20'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleOpenPreviewAt(idx)}
+                      aria-label={`Preview scanned page ${idx + 1}`}
+                      className="w-full h-full block"
+                    >
+                      <PageCanvasPreview page={pg} className="w-full h-full" />
+                    </button>
+                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 px-1 rounded bg-black/75 text-[9px] font-mono font-bold text-white">
+                      {idx + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeletePage(idx);
+                      }}
+                      aria-label={`Remove page ${idx + 1}`}
+                      className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/75 text-white/90 hover:bg-red-600 flex items-center justify-center"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                );
+              })}
+              <div ref={cameraStripEndRef} className="w-1 shrink-0" />
+            </div>
+          </div>
+        )}
+
+        {/* Bottom Genius Scan Capture Dock (compact for small screens) */}
+        <div className="bg-black/95 border-t border-white/10 px-3 pt-2 pb-safe space-y-2 shrink-0">
+          {!isAppendMode && retakeTargetIdx === null && (
+            <div className="flex items-center justify-center gap-5 text-xs font-semibold">
               {(
                 [
                   { id: 'single', label: 'Single' },
@@ -847,8 +1044,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
               ).map((m) => (
                 <button
                   key={m.id}
+                  type="button"
                   onClick={() => setScanMode(m.id)}
-                  className={`py-1 px-2 transition-colors ${
+                  className={`py-0.5 px-2 transition-colors ${
                     scanMode === m.id ? 'text-orange-400' : 'text-white/55 hover:text-white/80'
                   }`}
                 >
@@ -859,18 +1057,17 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           )}
 
           {/* Shutter Row */}
-          <div className="max-w-md mx-auto flex items-center justify-between px-4 pb-2">
+          <div className="max-w-md mx-auto flex items-center justify-between px-3 pb-1.5">
             {/* Import Real Photos */}
-            <button
-              type="button"
-              onClick={() => galleryInputRef.current?.click()}
-              className="flex flex-col items-center gap-1 min-w-[60px] text-white/80 hover:text-white transition-colors"
+            <label
+              htmlFor="scanner-gallery-input"
+              className="flex flex-col items-center gap-1 min-w-[58px] text-white/80 hover:text-white transition-colors cursor-pointer"
             >
-              <span className="w-11 h-11 rounded-2xl bg-white/12 flex items-center justify-center">
-                <ImageIcon className="w-5 h-5" />
+              <span className="w-10 h-10 rounded-xl bg-white/12 flex items-center justify-center">
+                <ImageIcon className="w-4 h-4" />
               </span>
-              <span className="text-[11px] font-medium">Photos</span>
-            </button>
+              <span className="text-[10px] font-medium">Photos</span>
+            </label>
 
             {/* Concentric Genius Scan Orange Shutter with Live Stability Progress Ring */}
             <button
@@ -883,7 +1080,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                 }
               }}
               aria-label="Capture live document photo"
-              className="relative w-[78px] h-[78px] rounded-full flex items-center justify-center active:scale-95 transition-transform"
+              className="relative w-[70px] h-[70px] rounded-full flex items-center justify-center active:scale-95 transition-transform"
             >
               <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80">
                 <circle
@@ -908,36 +1105,36 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   />
                 )}
               </svg>
-              <span className="w-[58px] h-[58px] rounded-full bg-orange-600 hover:bg-orange-500 transition-colors flex items-center justify-center">
-                <Camera className="w-6 h-6 text-white" />
+              <span className="w-[52px] h-[52px] rounded-full bg-orange-600 hover:bg-orange-500 transition-colors flex items-center justify-center">
+                <Camera className="w-5 h-5 text-white" />
               </span>
             </button>
 
-            {/* Captured Stack Preview & Next */}
+            {/* Captured Stack Preview & Review */}
             <button
               type="button"
               disabled={capturedPages.length === 0}
-              onClick={() => setPhase('review')}
-              className="flex flex-col items-center gap-1 min-w-[60px] disabled:opacity-35 transition-opacity"
+              onClick={() => handleOpenPreviewAt(capturedPages.length - 1)}
+              className="flex flex-col items-center gap-1 min-w-[58px] disabled:opacity-35 transition-opacity"
             >
-              <div className="relative w-11 h-11 rounded-xl overflow-hidden bg-white/15 border border-white/25 flex items-center justify-center">
+              <div className="relative w-10 h-10 rounded-xl overflow-hidden bg-white/15 border border-white/25 flex items-center justify-center">
                 {capturedPages.length > 0 ? (
                   <>
                     <img
                       src={capturedPages[capturedPages.length - 1].imageUrl}
-                      alt="Last scan"
+                      alt="Last scanned page"
                       className="w-full h-full object-cover"
                     />
-                    <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-orange-600 text-white text-[11px] font-mono font-bold flex items-center justify-center">
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-orange-600 text-white text-[10px] font-mono font-bold flex items-center justify-center">
                       {capturedPages.length}
                     </span>
                   </>
                 ) : (
-                  <Check className="w-5 h-5 text-white/50" />
+                  <Check className="w-4 h-4 text-white/50" />
                 )}
               </div>
-              <span className="text-[11px] font-semibold text-orange-400">
-                {capturedPages.length > 0 ? `Next (${capturedPages.length})` : 'Review'}
+              <span className="text-[10px] font-semibold text-orange-400">
+                {capturedPages.length > 0 ? `Preview (${capturedPages.length})` : 'Preview'}
               </span>
             </button>
           </div>
@@ -946,62 +1143,285 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     );
   }
 
-  /* PHASE 2: POST-CAPTURE REVIEW, REAL OCR SMART NAMING & SAVE SHEET */
+  /* PHASE 2: POST-CAPTURE LARGE PREVIEW, PAGE NAVIGATION, REAL OCR SMART NAMING & SAVE SHEET */
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-slate-100"
+      className="fixed inset-0 h-[100dvh] max-h-[100dvh] w-full overflow-hidden z-50 flex flex-col bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-slate-100"
       role="dialog"
       aria-modal="true"
       aria-label="Review Scanned Document"
     >
-      <header className="sticky top-0 z-20 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/10 px-4 sm:px-6 h-14 flex items-center justify-between gap-3 shrink-0">
-        <button
-          onClick={() => setPhase('camera')}
-          className="min-h-[44px] flex items-center gap-1.5 text-sm font-semibold text-orange-600 dark:text-orange-400"
-        >
-          <Camera className="w-4 h-4" />
-          <span>Add Page</span>
-        </button>
-        <div className="text-center min-w-0">
-          <h2 className="text-sm font-bold truncate">
-            {isAppendMode ? `Append to ${appendTargetTitle}` : 'Review & Save Scan'}
-          </h2>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-            {capturedPages.length} {capturedPages.length === 1 ? 'page' : 'pages'}
-            {ocrInFlightCount > 0 ? ` · OCR running (${ocrInFlightCount})…` : ''}
-          </p>
+      {/* Top Safe-Area Header */}
+      <header className="shrink-0 z-20 pt-safe bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/10">
+        <div className="px-3 sm:px-5 h-12 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setRetakeTargetIdx(null);
+              setPhase('camera');
+            }}
+            className="min-h-[38px] px-2 flex items-center gap-1 text-xs sm:text-sm font-semibold text-orange-600 dark:text-orange-400 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Page</span>
+          </button>
+          <div className="text-center min-w-0">
+            <h2 className="text-xs sm:text-sm font-bold truncate">
+              {isAppendMode ? `Append to ${appendTargetTitle}` : 'Preview & Save Scan'}
+            </h2>
+            <p className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+              Page {safeReviewIdx + 1} of {capturedPages.length}
+              {ocrInFlightCount > 0 ? ` · OCR (${ocrInFlightCount})…` : ''}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleSaveScan}
+            disabled={isSaving || capturedPages.length === 0}
+            className="min-h-[36px] px-3 sm:px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs sm:text-sm font-semibold flex items-center gap-1 disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            <Check className="w-4 h-4" />
+            <span>{isSaving ? 'Saving…' : isAppendMode ? 'Append' : 'Save PDF'}</span>
+          </button>
         </div>
-        <button
-          onClick={handleSaveScan}
-          disabled={isSaving || capturedPages.length === 0}
-          className="min-h-[40px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold flex items-center gap-1.5 disabled:opacity-50 transition-colors whitespace-nowrap"
-        >
-          <Check className="w-4 h-4" />
-          <span>{isSaving ? 'Saving…' : isAppendMode ? 'Append' : 'Save PDF'}</span>
-        </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5">
-        <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left: Captured Pages Grid */}
-          <div className="lg:col-span-7 space-y-4">
-            <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-slate-200/80 dark:border-white/10 space-y-3">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-6 py-3 pb-safe">
+        <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4">
+          {/* Left / Top: Large Captured-Page Preview + Multi-Page Navigation + Filter Strip */}
+          <div className="lg:col-span-7 space-y-3">
+            {/* Large Full-Page Preview Stage with Prev/Next & Swipe Navigation */}
+            {activeReviewPage && (
+              <div className="bg-[#121215] rounded-2xl border border-slate-200/80 dark:border-white/10 overflow-hidden shadow-sm">
+                {/* Page Navigation Bar */}
+                <div className="flex items-center justify-between px-2.5 py-1.5 bg-black/55 border-b border-white/10 text-white">
+                  <button
+                    type="button"
+                    disabled={safeReviewIdx <= 0}
+                    onClick={() => setActiveReviewIdx((i) => Math.max(0, i - 1))}
+                    aria-label="Previous scanned page"
+                    className="h-8 px-2 rounded-lg flex items-center gap-1 text-xs font-semibold bg-white/10 hover:bg-white/20 disabled:opacity-30 transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span className="hidden xs:inline">Prev</span>
+                  </button>
+
+                  <div className="flex items-center gap-2 text-xs font-mono font-semibold tabular-nums">
+                    <span>
+                      Page {safeReviewIdx + 1} / {capturedPages.length}
+                    </span>
+                    {activeReviewPage.ocrText ? (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-sans font-semibold">
+                        OCR ready
+                      </span>
+                    ) : ocrInFlightCount > 0 ? (
+                      <span className="px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 text-[10px] font-sans font-semibold">
+                        OCR…
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={safeReviewIdx >= capturedPages.length - 1}
+                    onClick={() =>
+                      setActiveReviewIdx((i) => Math.min(capturedPages.length - 1, i + 1))
+                    }
+                    aria-label="Next scanned page"
+                    className="h-8 px-2 rounded-lg flex items-center gap-1 text-xs font-semibold bg-white/10 hover:bg-white/20 disabled:opacity-30 transition-colors"
+                  >
+                    <span className="hidden xs:inline">Next</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Large Preview Canvas with Swipe Support */}
+                <div
+                  className="relative h-[38dvh] sm:h-[46dvh] min-h-[220px] max-h-[480px] w-full p-2.5 sm:p-4 flex items-center justify-center bg-[#0B0B0D] touch-pan-y select-none"
+                  onTouchStart={(e) => {
+                    touchStartXRef.current = e.touches[0]?.clientX ?? null;
+                  }}
+                  onTouchEnd={(e) => {
+                    if (touchStartXRef.current === null) return;
+                    const endX = e.changedTouches[0]?.clientX ?? touchStartXRef.current;
+                    const dx = endX - touchStartXRef.current;
+                    touchStartXRef.current = null;
+                    if (Math.abs(dx) >= 42) {
+                      if (dx < 0 && safeReviewIdx < capturedPages.length - 1) {
+                        setActiveReviewIdx((i) => Math.min(capturedPages.length - 1, i + 1));
+                      } else if (dx > 0 && safeReviewIdx > 0) {
+                        setActiveReviewIdx((i) => Math.max(0, i - 1));
+                      }
+                    }
+                  }}
+                >
+                  <PageCanvasPreview
+                    key={`${activeReviewPage.id}-${activeReviewPage.rotation}-${activeReviewPage.filter}`}
+                    page={activeReviewPage}
+                    className="w-full h-full rounded-lg shadow-xl"
+                  />
+
+                  {/* Quick overlay side arrows when multiple pages exist */}
+                  {capturedPages.length > 1 && safeReviewIdx > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveReviewIdx((i) => Math.max(0, i - 1))}
+                      aria-label="Previous page"
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-xs"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                  )}
+                  {capturedPages.length > 1 && safeReviewIdx < capturedPages.length - 1 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setActiveReviewIdx((i) => Math.min(capturedPages.length - 1, i + 1))
+                      }
+                      aria-label="Next page"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center backdrop-blur-xs"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Per-Page Action Toolbar */}
+                <div className="bg-white dark:bg-[#1C1C1E] border-t border-slate-200/80 dark:border-white/10 px-1.5 py-1.5 flex items-center justify-around gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditingPageIdx(safeReviewIdx)}
+                    className="flex-1 min-h-[38px] rounded-xl flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10"
+                  >
+                    <Crop className="w-4 h-4 text-orange-600" />
+                    <span>Crop</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRotatePage(safeReviewIdx)}
+                    className="flex-1 min-h-[38px] rounded-xl flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10"
+                  >
+                    <RotateCw className="w-4 h-4 text-orange-600" />
+                    <span>Rotate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRetakeTargetIdx(safeReviewIdx);
+                      setPhase('camera');
+                    }}
+                    className="flex-1 min-h-[38px] rounded-xl flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10"
+                  >
+                    <Camera className="w-4 h-4 text-orange-600" />
+                    <span>Retake</span>
+                  </button>
+                  {capturedPages.length > 1 && (
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={safeReviewIdx === 0}
+                        onClick={() => handleMoveActivePage(-1)}
+                        title="Move page earlier"
+                        aria-label="Move page earlier"
+                        className="w-8 h-9 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={safeReviewIdx >= capturedPages.length - 1}
+                        onClick={() => handleMoveActivePage(1)}
+                        title="Move page later"
+                        aria-label="Move page later"
+                        className="w-8 h-9 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30"
+                      >
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleDeletePage(safeReviewIdx)}
+                    className="flex-1 min-h-[38px] rounded-xl flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 text-[11px] font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Scanned Pages Navigation Filmstrip (tap any page to switch preview, or + Scan) */}
+            <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-2.5 sm:p-3 border border-slate-200/80 dark:border-white/10 space-y-2">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                  Scanned Pages ({capturedPages.length})
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Swipe preview or tap page
+                </span>
+              </div>
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                {capturedPages.map((pg, idx) => {
+                  const isActive = idx === safeReviewIdx;
+                  return (
+                    <button
+                      key={pg.id}
+                      ref={isActive ? activeThumbRef : undefined}
+                      type="button"
+                      onClick={() => setActiveReviewIdx(idx)}
+                      aria-label={`Select page ${idx + 1}`}
+                      className={`relative shrink-0 w-14 h-[74px] rounded-xl overflow-hidden border-2 bg-slate-100 dark:bg-[#121214] p-0.5 transition-all ${
+                        isActive
+                          ? 'border-orange-600 ring-2 ring-orange-500/25 scale-[1.03]'
+                          : 'border-slate-200 dark:border-white/15 opacity-80 hover:opacity-100'
+                      }`}
+                    >
+                      <PageCanvasPreview page={pg} className="w-full h-full rounded-md" />
+                      <span
+                        className={`absolute bottom-1 left-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${
+                          isActive
+                            ? 'bg-orange-600 text-white'
+                            : 'bg-black/70 text-white'
+                        }`}
+                      >
+                        P{idx + 1}
+                      </span>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRetakeTargetIdx(null);
+                    setPhase('camera');
+                  }}
+                  className="shrink-0 w-14 h-[74px] rounded-xl border-2 border-dashed border-slate-300 dark:border-white/20 flex flex-col items-center justify-center gap-1 text-slate-500 dark:text-slate-400 hover:border-orange-500 hover:text-orange-600 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span className="text-[10px] font-semibold">Scan</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Enhancement Filter Strip */}
+            <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-3 border border-slate-200/80 dark:border-white/10 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                   <Sliders className="w-3.5 h-3.5 text-orange-600" />
                   <span>Enhancement Filter</span>
                 </span>
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  Applies across batch
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Applies across all pages
                 </span>
               </div>
-              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
                 {SCAN_FILTERS.map((f) => (
                   <button
                     key={f.id}
                     type="button"
                     onClick={() => handleApplyGlobalFilter(f.id)}
-                    className={`min-h-[38px] px-3.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                    className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                       activeFilter === f.id
                         ? 'bg-orange-600 text-white'
                         : 'bg-slate-100 dark:bg-[#2C2C2E] text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/15'
@@ -1011,60 +1431,6 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   </button>
                 ))}
               </div>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
-              {capturedPages.map((pg, idx) => (
-                <div
-                  key={pg.id}
-                  className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-2.5 border border-slate-200/80 dark:border-white/10 flex flex-col gap-2"
-                >
-                  <div className="aspect-[3/4] rounded-xl bg-slate-100 dark:bg-[#121214] p-1.5 overflow-hidden">
-                    <PageCanvasPreview page={pg} className="w-full h-full rounded shadow-xs" />
-                  </div>
-                  <div className="flex items-center justify-between px-0.5">
-                    <span className="text-xs font-mono font-semibold text-slate-600 dark:text-slate-300">
-                      P{idx + 1} {pg.ocrText ? '· OCR' : ''}
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setEditingPageIdx(idx)}
-                        title="Crop & adjust"
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:text-orange-600 hover:bg-slate-100 dark:hover:bg-white/10"
-                      >
-                        <Crop className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setCapturedPages((prev) =>
-                            prev.map((item, i) =>
-                              i === idx
-                                ? { ...item, rotation: (((item.rotation + 90) % 360) as 0 | 90 | 180 | 270) }
-                                : item
-                            )
-                          )
-                        }
-                        title="Rotate 90°"
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:text-orange-600 hover:bg-slate-100 dark:hover:bg-white/10"
-                      >
-                        <RotateCw className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setCapturedPages((prev) => prev.filter((_, i) => i !== idx))
-                        }
-                        title="Remove page"
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
             </div>
           </div>
 

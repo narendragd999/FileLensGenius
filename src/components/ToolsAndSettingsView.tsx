@@ -31,10 +31,11 @@ interface ToolsAndSettingsViewProps {
   preferences: AppPreferences;
   indexStats: IndexStats;
   linkedDeviceRootsCount: number;
+  hasAllFilesPermission: boolean;
   isIndexing: boolean;
   indexProgress: IndexProgress | null;
   lastIndexSummary: DeviceIndexSummary | null;
-  onOpenDeviceIndexer: () => void;
+  onOneTapIndexDevice: () => void;
   onIndexFiles: (files: File[], sourceLabel: string) => void;
   onRunDeltaReindex: () => void;
   onCancelIndexing: () => void;
@@ -63,10 +64,11 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
   preferences,
   indexStats,
   linkedDeviceRootsCount,
+  hasAllFilesPermission,
   isIndexing,
   indexProgress,
   lastIndexSummary,
-  onOpenDeviceIndexer,
+  onOneTapIndexDevice,
   onIndexFiles,
   onRunDeltaReindex,
   onCancelIndexing,
@@ -136,10 +138,11 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
       <SmartIndexingBar
         stats={indexStats}
         linkedDeviceRootsCount={linkedDeviceRootsCount}
+        hasAllFilesPermission={hasAllFilesPermission}
         isIndexing={isIndexing}
         progress={indexProgress}
         lastSummary={lastIndexSummary}
-        onOpenDeviceIndexer={onOpenDeviceIndexer}
+        onOneTapIndexDevice={onOneTapIndexDevice}
         onIndexFiles={onIndexFiles}
         onRunDeltaReindex={onRunDeltaReindex}
         onCancelIndexing={onCancelIndexing}

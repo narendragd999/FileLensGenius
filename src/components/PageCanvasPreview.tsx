@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { FileText } from 'lucide-react';
 import { DocumentPage, WatermarkConfig } from '../types/filelens';
 
@@ -20,6 +20,10 @@ export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = ({
   blurContent = false,
 }) => {
   const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [page.imageUrl]);
 
   const filterClass = `scan-filter-${page.filter}`;
   const isSideways = page.rotation === 90 || page.rotation === 270;
@@ -66,7 +70,7 @@ export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = ({
             alt="Scanned document page"
             referrerPolicy="no-referrer"
             onError={() => setImgError(true)}
-            className={`max-w-full max-h-full object-contain ${filterClass} ${
+            className={`w-full h-full object-contain ${filterClass} ${
               blurContent ? 'blur-md scale-105' : ''
             }`}
             style={{

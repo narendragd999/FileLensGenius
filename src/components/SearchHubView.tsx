@@ -22,17 +22,18 @@ import {
 import { formatBytes, formatShortDate, triggerFileDownload } from '../utils/formatters';
 import { exportSearchResults, runDocumentSearch } from '../utils/searchEngine';
 import { PageCanvasPreview } from './PageCanvasPreview';
-import { SmartIndexingBar } from './SmartIndexingBar';
+import { IndexDeviceTrigger, SmartIndexingBar } from './SmartIndexingBar';
 
 interface SearchHubViewProps {
   documents: ScanDocument[];
   savedSearches: SavedSearch[];
   indexStats: IndexStats;
   linkedDeviceRootsCount: number;
+  hasAllFilesPermission: boolean;
   isIndexing: boolean;
   indexProgress: IndexProgress | null;
   lastIndexSummary: DeviceIndexSummary | null;
-  onOpenDeviceIndexer: () => void;
+  onOneTapIndexDevice: () => void;
   onIndexFiles: (files: File[], sourceLabel: string) => void;
   onRunDeltaReindex: () => void;
   onCancelIndexing: () => void;
@@ -92,10 +93,11 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
   savedSearches,
   indexStats,
   linkedDeviceRootsCount,
+  hasAllFilesPermission,
   isIndexing,
   indexProgress,
   lastIndexSummary,
-  onOpenDeviceIndexer,
+  onOneTapIndexDevice,
   onIndexFiles,
   onRunDeltaReindex,
   onCancelIndexing,
@@ -249,10 +251,11 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           compact
           stats={indexStats}
           linkedDeviceRootsCount={linkedDeviceRootsCount}
+          hasAllFilesPermission={hasAllFilesPermission}
           isIndexing={isIndexing}
           progress={indexProgress}
           lastSummary={lastIndexSummary}
-          onOpenDeviceIndexer={onOpenDeviceIndexer}
+          onOneTapIndexDevice={onOneTapIndexDevice}
           onIndexFiles={onIndexFiles}
           onRunDeltaReindex={onRunDeltaReindex}
           onCancelIndexing={onCancelIndexing}
@@ -325,13 +328,13 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 : 'Try Natural Language (384-dim semantic vectors) or switch File Types to All.'}
             </p>
             {documents.length === 0 && (
-              <button
-                type="button"
-                onClick={onOpenDeviceIndexer}
-                className="h-9 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold"
+              <IndexDeviceTrigger
+                disabled={isIndexing}
+                onOneTapIndexDevice={onOneTapIndexDevice}
+                className="h-9 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold inline-flex items-center justify-center"
               >
-                Index Device Files
-              </button>
+                Index Device
+              </IndexDeviceTrigger>
             )}
           </div>
         ) : (

@@ -1,4 +1,4 @@
-import React, { useId, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Bookmark,
   Camera,
@@ -17,7 +17,6 @@ import {
   MoreHorizontal,
   Search,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react';
 import {
@@ -31,7 +30,7 @@ import {
 import { formatBytes, formatShortDate } from '../utils/formatters';
 import { exportDocumentAsPdf } from '../utils/pdfExport';
 import { PageCanvasPreview } from './PageCanvasPreview';
-import { SmartIndexingBar } from './SmartIndexingBar';
+import { IndexDeviceTrigger, SmartIndexingBar } from './SmartIndexingBar';
 
 interface DocumentsViewProps {
   documents: ScanDocument[];
@@ -39,10 +38,11 @@ interface DocumentsViewProps {
   selectedFolderId: string;
   indexStats: IndexStats;
   linkedDeviceRootsCount: number;
+  hasAllFilesPermission: boolean;
   isIndexing: boolean;
   indexProgress: IndexProgress | null;
   lastIndexSummary: DeviceIndexSummary | null;
-  onOpenDeviceIndexer: () => void;
+  onOneTapIndexDevice: () => void;
   onIndexFiles: (files: File[], sourceLabel: string) => void;
   onRunDeltaReindex: () => void;
   onCancelIndexing: () => void;
@@ -67,10 +67,11 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   selectedFolderId,
   indexStats,
   linkedDeviceRootsCount,
+  hasAllFilesPermission,
   isIndexing,
   indexProgress,
   lastIndexSummary,
-  onOpenDeviceIndexer,
+  onOneTapIndexDevice,
   onIndexFiles,
   onRunDeltaReindex,
   onCancelIndexing,
@@ -98,7 +99,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [actionSheetDoc, setActionSheetDoc] = useState<ScanDocument | null>(null);
   const [renameValue, setRenameValue] = useState<string>('');
   const [showMoveFolderModal, setShowMoveFolderModal] = useState<boolean>(false);
-  const importInputId = useId();
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -194,29 +194,8 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             <IdCard className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
             <span>2-in-1 ID</span>
           </button>
-          <label
-            htmlFor={importInputId}
-            className="h-9 px-3 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-slate-800 dark:text-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer select-none"
-          >
-            <Upload className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-            <span>Import Any File</span>
-          </label>
         </div>
       </div>
-
-      {/* Native Universal Import Input (sr-only for guaranteed Android/iOS label trigger) */}
-      <input
-        id={importInputId}
-        type="file"
-        multiple
-        className="sr-only"
-        onChange={(e) => {
-          if (e.target.files && e.target.files.length > 0) {
-            onIndexFiles(Array.from(e.target.files), `Imported (${e.target.files.length} files)`);
-            e.target.value = '';
-          }
-        }}
-      />
 
       {/* Row 1: Compact Instant Search + Inline Utility Buttons */}
       <div className="flex items-center gap-1.5">
@@ -241,7 +220,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           )}
         </div>
 
-        {/* Mobile quick ID & Import icons */}
+        {/* Mobile quick 2-in-1 ID button */}
         <button
           type="button"
           onClick={() => onOpenScanner('idcard')}
@@ -251,14 +230,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         >
           <IdCard className="w-4 h-4" />
         </button>
-        <label
-          htmlFor={importInputId}
-          title="Import any file"
-          aria-label="Import any file"
-          className="sm:hidden h-9 w-9 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 flex items-center justify-center text-orange-600 dark:text-orange-400 shrink-0 cursor-pointer"
-        >
-          <Upload className="w-4 h-4" />
-        </label>
 
         <button
           type="button"
@@ -398,15 +369,16 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       )}
 
-      {/* Row 3: Ultra-Compact Single-Line Smart Indexing Bar (~36px) */}
+      {/* Row 3: Single-Button FileLensMobile Device Index Bar */}
       <SmartIndexingBar
         compact
         stats={indexStats}
         linkedDeviceRootsCount={linkedDeviceRootsCount}
+        hasAllFilesPermission={hasAllFilesPermission}
         isIndexing={isIndexing}
         progress={indexProgress}
         lastSummary={lastIndexSummary}
-        onOpenDeviceIndexer={onOpenDeviceIndexer}
+        onOneTapIndexDevice={onOneTapIndexDevice}
         onIndexFiles={onIndexFiles}
         onRunDeltaReindex={onRunDeltaReindex}
         onCancelIndexing={onCancelIndexing}
@@ -462,18 +434,18 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 Your Local Vault is Empty
               </h3>
               <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                Index any file from your device storage (PDF, Office, Photos with OCR, Code, ZIP, Media) or scan directly with your camera.
+                Tap Index Device once to scan and OCR all files on your device, or capture with your camera.
               </p>
             </div>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={onOpenDeviceIndexer}
+              <IndexDeviceTrigger
+                disabled={isIndexing}
+                onOneTapIndexDevice={onOneTapIndexDevice}
                 className="h-10 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5"
               >
                 <HardDrive className="w-4 h-4" />
-                <span>Index Device Files</span>
-              </button>
+                <span>Index Device</span>
+              </IndexDeviceTrigger>
               <button
                 type="button"
                 onClick={() => onOpenScanner('batch')}
