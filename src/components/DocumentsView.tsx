@@ -99,6 +99,17 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [actionSheetDoc, setActionSheetDoc] = useState<ScanDocument | null>(null);
   const [renameValue, setRenameValue] = useState<string>('');
   const [showMoveFolderModal, setShowMoveFolderModal] = useState<boolean>(false);
+  const [debouncedFilterQuery, setDebouncedFilterQuery] = useState<string>(filterQuery);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedFilterQuery(filterQuery), 180);
+    return () => window.clearTimeout(t);
+  }, [filterQuery]);
+
+  const totalPagesCount = useMemo(
+    () => documents.reduce((acc, d) => acc + d.pages.length, 0),
+    [documents]
+  );
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -107,7 +118,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   }, [documents]);
 
   const filteredDocs = useMemo(() => {
-    const q = filterQuery.trim().toLowerCase();
+    const q = debouncedFilterQuery.trim().toLowerCase();
     return documents
       .filter((d) => {
         if (selectedFolderId === 'bookmarked' && !d.isBookmarked) return false;
@@ -129,7 +140,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         if (sortBy === 'size') return b.sizeBytes - a.sizeBytes;
         return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
       });
-  }, [documents, selectedFolderId, selectedTag, filterQuery, sortBy]);
+  }, [documents, selectedFolderId, selectedTag, debouncedFilterQuery, sortBy]);
 
   const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
@@ -204,7 +215,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             Documents
           </h1>
           <span className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-            {filteredDocs.length} files · {documents.reduce((acc, d) => acc + d.pages.length, 0)}p
+            {filteredDocs.length} files · {totalPagesCount}p
           </span>
         </div>
         <div className="flex items-center gap-1.5">

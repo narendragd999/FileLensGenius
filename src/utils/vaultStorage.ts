@@ -55,9 +55,13 @@ function purgeLegacyLocalStorage(): void {
   }
 }
 
+let cachedDbPromise: Promise<IDBDatabase> | null = null;
+
 function openVaultDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDbPromise) return cachedDbPromise;
+  cachedDbPromise = new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
+      cachedDbPromise = null;
       reject(new Error('IndexedDB unavailable'));
       return;
     }
@@ -68,9 +72,18 @@ function openVaultDb(): Promise<IDBDatabase> {
         db.createObjectStore(VAULT_STORE);
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onclose = () => { cachedDbPromise = null; };
+      db.onversionchange = () => { db.close(); cachedDbPromise = null; };
+      resolve(db);
+    };
+    req.onerror = () => {
+      cachedDbPromise = null;
+      reject(req.error);
+    };
   });
+  return cachedDbPromise;
 }
 
 export async function loadVaultState(): Promise<PersistedVaultState> {

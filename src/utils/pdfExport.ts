@@ -1,4 +1,5 @@
 import { jsPDF, jsPDFOptions } from 'jspdf';
+import JSZip from 'jszip';
 import {
   DocumentPage,
   FULL_QUAD,
@@ -420,7 +421,60 @@ export async function exportDocumentAsPdf(
   }
 
   const safeName = doc.title.replace(/[^a-zA-Z0-9._ -]/g, '').trim() || 'FileLens_Document';
+  if (typeof window !== 'undefined' && typeof window.FileLensAndroid?.saveToPublicDocuments === 'function') {
+    const dataUri = pdf.output('datauristring');
+    const savedPath = window.FileLensAndroid.saveToPublicDocuments(`${safeName}.pdf`, 'application/pdf', dataUri);
+    if (savedPath) return;
+  }
   pdf.save(`${safeName}.pdf`);
+}
+
+export async function openDocumentInNativeViewer(doc: ScanDocument): Promise<boolean> {
+  if (
+    doc.pages.length === 0 ||
+    typeof window === 'undefined' ||
+    typeof window.FileLensAndroid?.openInNativeViewer !== 'function'
+  ) {
+    return false;
+  }
+  const safeName = doc.title.replace(/[^a-zA-Z0-9._ -]/g, '').trim() || 'FileLens_Document';
+  const firstRendered = await renderPageToDataUrl(doc.pages[0], doc.watermark, doc.qualityPreset);
+  const firstOri = firstRendered.width > firstRendered.height ? 'landscape' : 'portrait';
+  const pdf = new jsPDF({ orientation: firstOri, unit: 'mm', format: 'a4' });
+  for (let i = 0; i < doc.pages.length; i++) {
+    const rendered =
+      i === 0 ? firstRendered : await renderPageToDataUrl(doc.pages[i], doc.watermark, doc.qualityPreset);
+    const w = pdf.internal.pageSize.getWidth();
+    const h = pdf.internal.pageSize.getHeight();
+    if (i > 0) pdf.addPage('a4', rendered.width > rendered.height ? 'landscape' : 'portrait');
+    const ratio = Math.min(w / rendered.width, h / rendered.height);
+    const dw = rendered.width * ratio;
+    const dh = rendered.height * ratio;
+    pdf.addImage(rendered.dataUrl, 'JPEG', (w - dw) / 2, (h - dh) / 2, dw, dh, undefined, 'FAST');
+  }
+  return window.FileLensAndroid.openInNativeViewer(
+    `${safeName}.pdf`,
+    'application/pdf',
+    pdf.output('datauristring')
+  );
+}
+
+export async function exportDocumentPagesAsZip(doc: ScanDocument): Promise<void> {
+  if (doc.pages.length === 0) return;
+  const zip = new JSZip();
+  const safeName = doc.title.replace(/[^a-zA-Z0-9._ -]/g, '').trim() || 'FileLens_Document';
+  for (let i = 0; i < doc.pages.length; i++) {
+    const rendered = await renderPageToDataUrl(doc.pages[i], doc.watermark, doc.qualityPreset);
+    const b64 = rendered.dataUrl.includes(',') ? rendered.dataUrl.split(',')[1] : rendered.dataUrl;
+    zip.file(`${safeName}_Page_${i + 1}.jpg`, b64, { base64: true });
+  }
+  if (typeof window !== 'undefined' && typeof window.FileLensAndroid?.saveToPublicDocuments === 'function') {
+    const zipB64 = await zip.generateAsync({ type: 'base64' });
+    const saved = window.FileLensAndroid.saveToPublicDocuments(`${safeName}_Pages.zip`, 'application/zip', zipB64);
+    if (saved) return;
+  }
+  const blob = await zip.generateAsync({ type: 'blob' });
+  triggerFileDownload(blob, `${safeName}_Pages.zip`);
 }
 
 export async function exportSinglePageAsJpeg(

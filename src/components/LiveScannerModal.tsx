@@ -674,8 +674,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       quad: FULL_QUAD,
       filter: activeFilter,
       rotation: 0,
-      brightness: 0,
-      contrast: 0,
+      brightness: 1,
+      contrast: 1,
       ocrText: '',
       signatures: [],
     }));

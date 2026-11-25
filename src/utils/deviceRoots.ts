@@ -64,6 +64,9 @@ export interface FileLensAndroidBridge {
   stopBackgroundService?: () => void;
   setDeviceClockAlarm?: (hour: number, minute: number, label: string) => boolean;
   openDeviceCalendarEvent?: (title: string, startEpochMs: number, description: string) => boolean;
+  saveToPublicDocuments?: (fileName: string, mimeType: string, base64Data: string) => string;
+  openInNativeViewer?: (fileName: string, mimeType: string, base64Data: string) => boolean;
+  clearNativeAppCache?: () => number;
 }
 
 export interface AndroidNativeFileMeta {

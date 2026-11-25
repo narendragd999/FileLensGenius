@@ -915,6 +915,20 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
                 <Upload className="w-3.5 h-3.5" />
                 <span>Restore .fspbackup</span>
               </label>
+              {typeof window !== 'undefined' &&
+                typeof window.FileLensAndroid?.clearNativeAppCache === 'function' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const freed = window.FileLensAndroid?.clearNativeAppCache?.() ?? 0;
+                      onToast(`Cleared app cache · Freed ${formatBytes(freed)}`);
+                    }}
+                    className="min-h-[38px] px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-xs font-semibold flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    <span>Clear App Cache</span>
+                  </button>
+                )}
               <button
                 type="button"
                 onClick={handleBackupDownload}

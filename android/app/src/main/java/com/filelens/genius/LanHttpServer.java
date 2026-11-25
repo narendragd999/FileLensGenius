@@ -69,6 +69,7 @@ public class LanHttpServer {
         } catch (Exception ignored) {
         }
         serverSocket = null;
+        pool.shutdownNow();
     }
 
     public boolean isRunning() {
@@ -84,6 +85,7 @@ public class LanHttpServer {
     private String getLocalIpAddress() {
         try {
             for (NetworkInterface intf : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!intf.isUp() || intf.isLoopback()) continue;
                 for (InetAddress addr : Collections.list(intf.getInetAddresses())) {
                     if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
                         return addr.getHostAddress();
@@ -93,6 +95,21 @@ public class LanHttpServer {
         } catch (Exception ignored) {
         }
         return "127.0.0.1";
+    }
+
+    private boolean isAllowedPath(String path) {
+        if (path == null || path.isEmpty()) return true;
+        try {
+            String canon = new File(path).getCanonicalPath();
+            for (File r : roots) {
+                String rCanon = r.getCanonicalPath();
+                if (canon.equals(rCanon) || canon.startsWith(rCanon + File.separator)) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
     }
 
     private void handleClient(Socket socket) {
@@ -114,6 +131,10 @@ public class LanHttpServer {
             }
 
             String targetPath = extractParam(query, "path");
+            if (!isAllowedPath(targetPath)) {
+                serveDirectoryHtml(out, "");
+                return;
+            }
             if ("/download".equals(pathOnly) || "/view".equals(pathOnly)) {
                 serveFile(out, targetPath, "/download".equals(pathOnly));
             } else {

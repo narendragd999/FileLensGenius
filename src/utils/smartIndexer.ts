@@ -412,53 +412,58 @@ async function parsePdfFile(
 ): Promise<{ pages: DocumentPage[]; combinedText: string }> {
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
   const pdf = await loadingTask.promise;
-  const maxPages = Math.min(pdf.numPages, 20);
-  const pages: DocumentPage[] = [];
-  const textParts: string[] = [];
+  try {
+    const maxPages = Math.min(pdf.numPages, 20);
+    const pages: DocumentPage[] = [];
+    const textParts: string[] = [];
 
-  for (let p = 1; p <= maxPages; p++) {
-    const page = await pdf.getPage(p);
-    // Extract embedded text FIRST without rendering heavy canvases on every text-based page
-    const textContent = await page.getTextContent();
-    let pageText = textContent.items
-      .map((item) => ('str' in item ? item.str : ''))
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (isLikelyKrutiDev(pageText)) {
-      pageText = convertKrutiDevToUnicode(pageText);
+    for (let p = 1; p <= maxPages; p++) {
+      const page = await pdf.getPage(p);
+      // Extract embedded text FIRST without rendering heavy canvases on every text-based page
+      const textContent = await page.getTextContent();
+      let pageText = textContent.items
+        .map((item) => ('str' in item ? item.str : ''))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (isLikelyKrutiDev(pageText)) {
+        pageText = convertKrutiDevToUnicode(pageText);
+      }
+
+      const needsOcr = pageText.length < 12 && p <= 4;
+      const viewport = page.getViewport({ scale: needsOcr ? 1.25 : 0.85 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+      }
+      const imgUrl = canvas.toDataURL('image/jpeg', needsOcr ? 0.8 : 0.72);
+
+      if (needsOcr) {
+        pageText = await runRealOcrOnImage(imgUrl, ocrLanguage);
+      }
+
+      textParts.push(pageText);
+      pages.push({
+        id: `pg-pdf-${Date.now()}-${++globalDocSeq}-${p}`,
+        imageUrl: imgUrl,
+        rotation: 0,
+        filter: defaultFilter,
+        quad: FULL_QUAD,
+        brightness: 1,
+        contrast: 1,
+        ocrText: pageText,
+        signatures: [],
+      });
     }
 
-    const needsOcr = pageText.length < 12 && p <= 4;
-    const viewport = page.getViewport({ scale: needsOcr ? 1.25 : 0.85 });
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(viewport.width);
-    canvas.height = Math.round(viewport.height);
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      await page.render({ canvasContext: ctx, viewport, canvas }).promise;
-    }
-    const imgUrl = canvas.toDataURL('image/jpeg', needsOcr ? 0.8 : 0.72);
-
-    if (needsOcr) {
-      pageText = await runRealOcrOnImage(imgUrl, ocrLanguage);
-    }
-
-    textParts.push(pageText);
-    pages.push({
-      id: `pg-pdf-${Date.now()}-${++globalDocSeq}-${p}`,
-      imageUrl: imgUrl,
-      rotation: 0,
-      filter: defaultFilter,
-      quad: FULL_QUAD,
-      brightness: 1,
-      contrast: 1,
-      ocrText: pageText,
-      signatures: [],
-    });
+    return { pages, combinedText: textParts.join('\n') };
+  } finally {
+    await pdf.cleanup().catch(() => undefined);
+    await loadingTask.destroy().catch(() => undefined);
   }
-
-  return { pages, combinedText: textParts.join('\n') };
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -647,7 +652,8 @@ export async function runSmartIndexingPipeline(
         ];
       }
     } else if (category === 'image') {
-      const dataUrl = await readFileAsDataUrl(file);
+      const rawDataUrl = await readFileAsDataUrl(file);
+      const compactUrl = ext === 'svg' ? rawDataUrl : await downscaleForOcr(rawDataUrl, 800);
       let ocrText = '';
       let detectedQuad = FULL_QUAD;
 
@@ -656,8 +662,8 @@ export async function runSmartIndexingPipeline(
         ocrText = stripXmlTags(svgRaw).slice(0, 12_000);
       } else {
         const [extractedOcr, quad] = await Promise.all([
-          runRealOcrOnImage(dataUrl, ocrLanguage),
-          withTimeout(detectQuadFromImageUrl(dataUrl), 3000, FULL_QUAD),
+          runRealOcrOnImage(compactUrl, ocrLanguage),
+          withTimeout(detectQuadFromImageUrl(compactUrl), 3000, FULL_QUAD),
         ]);
         ocrText = extractedOcr;
         detectedQuad = quad;
@@ -667,7 +673,7 @@ export async function runSmartIndexingPipeline(
       pages = [
         {
           id: `pg-img-${Date.now()}-${fileIdx}`,
-          imageUrl: dataUrl,
+          imageUrl: compactUrl,
           rotation: 0,
           filter: defaultFilter,
           quad: detectedQuad,

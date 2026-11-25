@@ -168,6 +168,7 @@ public class LanFtpServer {
                         case "PASV":
                             closePassive();
                             passiveServer = new ServerSocket(0);
+                            passiveServer.setSoTimeout(15000);
                             int p = passiveServer.getLocalPort();
                             String ip = getLocalIpAddress().replace('.', ',');
                             send(out, "227 Entering Passive Mode (" + ip + "," + (p >> 8) + "," + (p & 0xFF) + ")");
@@ -333,7 +334,7 @@ public class LanFtpServer {
                     : (path.startsWith("/") ? new File(rootDir, path.substring(1)) : new File(currentDir, path));
                 String rootCanon = rootDir.getCanonicalPath();
                 String targetCanon = f.getCanonicalPath();
-                if (!targetCanon.startsWith(rootCanon)) return rootDir;
+                if (!targetCanon.equals(rootCanon) && !targetCanon.startsWith(rootCanon + File.separator)) return rootDir;
                 return f;
             } catch (IOException e) {
                 return null;

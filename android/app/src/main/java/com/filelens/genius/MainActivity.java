@@ -2,6 +2,7 @@ package com.filelens.genius;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -17,6 +18,7 @@ import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.AlarmClock;
 import android.provider.CalendarContract;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
@@ -31,6 +33,7 @@ import androidx.activity.result.IntentSenderRequest;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import com.getcapacitor.BridgeActivity;
 import com.google.android.gms.tasks.Tasks;
@@ -51,7 +54,9 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -77,6 +82,23 @@ public class MainActivity extends BridgeActivity {
     private SpeechRecognizer speechRecognizer = null;
     private String pendingVoiceLang = "en-US";
     private String pendingShareJson = null;
+    private volatile boolean bgServiceActive = false;
+    private TextRecognizer latinRecognizer = null;
+    private TextRecognizer devanagariRecognizer = null;
+
+    private synchronized TextRecognizer getLatinRecognizer() {
+        if (latinRecognizer == null) {
+            latinRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+        }
+        return latinRecognizer;
+    }
+
+    private synchronized TextRecognizer getDevanagariRecognizer() {
+        if (devanagariRecognizer == null) {
+            devanagariRecognizer = TextRecognition.getClient(new DevanagariTextRecognizerOptions.Builder().build());
+        }
+        return devanagariRecognizer;
+    }
 
     private final ActivityResultLauncher<IntentSenderRequest> docScannerLauncher =
         registerForActivityResult(new ActivityResultContracts.StartIntentSenderForResult(), result -> {
@@ -126,6 +148,34 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         attachJsBridge();
         handleIncomingShareIntent(getIntent());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1003);
+            }
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        try {
+            if (lanServer != null) lanServer.stop();
+        } catch (Exception ignored) {}
+        try {
+            if (ftpServer != null) ftpServer.stop();
+        } catch (Exception ignored) {}
+        try {
+            if (speechRecognizer != null) speechRecognizer.destroy();
+        } catch (Exception ignored) {}
+        try {
+            if (latinRecognizer != null) latinRecognizer.close();
+        } catch (Exception ignored) {}
+        try {
+            if (devanagariRecognizer != null) devanagariRecognizer.close();
+        } catch (Exception ignored) {}
+        indexExecutor.shutdownNow();
+        scanExecutor.shutdownNow();
+        super.onDestroy();
     }
 
     @Override
@@ -607,7 +657,7 @@ public class MainActivity extends BridgeActivity {
                 List<File> priorityFiles = new ArrayList<>();
                 List<File> otherFiles = new ArrayList<>();
                 int foldersScanned = 0;
-                final int MAX_FILES = 2500;
+                final int MAX_FILES = 10000;
 
                 ArrayDeque<File> queue = new ArrayDeque<>(roots);
                 while (!queue.isEmpty() && !cancelRequested.get()
@@ -783,15 +833,14 @@ public class MainActivity extends BridgeActivity {
                     InputImage image = InputImage.fromBitmap(bmp, 0);
                     boolean useDevanagari = lang != null && (lang.contains("hin") || lang.contains("hi") || lang.contains("dev"));
                     TextRecognizer primary = useDevanagari
-                        ? TextRecognition.getClient(new DevanagariTextRecognizerOptions.Builder().build())
-                        : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+                        ? getDevanagariRecognizer()
+                        : getLatinRecognizer();
 
                     primary.process(image)
                         .addOnSuccessListener(result -> {
                             String text = result != null && result.getText() != null ? result.getText().trim() : "";
                             if (text.isEmpty() && useDevanagari) {
-                                TextRecognizer fallback = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-                                fallback.process(image)
+                                getLatinRecognizer().process(image)
                                     .addOnSuccessListener(fb -> {
                                         bmp.recycle();
                                         dispatchMlKitOcrResult(requestId, fb != null && fb.getText() != null ? fb.getText().trim() : "");
@@ -885,6 +934,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void startBackgroundService(String title, String body, int progress, int max) {
             try {
+                bgServiceActive = true;
                 Intent svc = new Intent(MainActivity.this, FileLensBackgroundService.class);
                 svc.setAction(FileLensBackgroundService.ACTION_START);
                 svc.putExtra(FileLensBackgroundService.EXTRA_TITLE, title);
@@ -898,6 +948,7 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void updateBackgroundService(String title, String body, int progress, int max) {
+            if (!bgServiceActive) return;
             try {
                 Intent svc = new Intent(MainActivity.this, FileLensBackgroundService.class);
                 svc.setAction(FileLensBackgroundService.ACTION_UPDATE);
@@ -912,12 +963,93 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void stopBackgroundService() {
+            if (!bgServiceActive) return;
+            bgServiceActive = false;
             try {
                 Intent svc = new Intent(MainActivity.this, FileLensBackgroundService.class);
                 svc.setAction(FileLensBackgroundService.ACTION_STOP);
                 startService(svc);
             } catch (Exception ignored) {
             }
+        }
+
+        @JavascriptInterface
+        public String saveToPublicDocuments(String fileName, String mimeType, String base64Data) {
+            try {
+                String b64 = base64Data;
+                int comma = b64.indexOf(',');
+                if (comma >= 0) b64 = b64.substring(comma + 1);
+                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                String safeName = (fileName == null || fileName.trim().isEmpty()) ? "FileLens_Export.pdf" : fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+                    values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType != null ? mimeType : "application/octet-stream");
+                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/FileLensGenius");
+                    Uri uri = getContentResolver().insert(MediaStore.Files.getContentUri("external"), values);
+                    if (uri != null) {
+                        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                            if (os != null) os.write(bytes);
+                        }
+                        return "Documents/FileLensGenius/" + safeName;
+                    }
+                } else {
+                    File docsDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "FileLensGenius");
+                    if (!docsDir.exists()) docsDir.mkdirs();
+                    File outFile = new File(docsDir, safeName);
+                    try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                        fos.write(bytes);
+                    }
+                    return outFile.getAbsolutePath();
+                }
+            } catch (Exception ignored) {
+            }
+            return "";
+        }
+
+        @JavascriptInterface
+        public boolean openInNativeViewer(String fileName, String mimeType, String base64Data) {
+            try {
+                String b64 = base64Data;
+                int comma = b64.indexOf(',');
+                if (comma >= 0) b64 = b64.substring(comma + 1);
+                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                String safeName = (fileName == null || fileName.trim().isEmpty()) ? "preview.pdf" : fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+                File outFile = new File(getCacheDir(), safeName);
+                try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                    fos.write(bytes);
+                }
+                Uri uri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", outFile);
+                Intent intent = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, mimeType != null ? mimeType : "application/pdf")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public long clearNativeAppCache() {
+            long freed = deleteDirContents(getCacheDir());
+            if (getExternalCacheDir() != null) freed += deleteDirContents(getExternalCacheDir());
+            return freed;
+        }
+
+        private long deleteDirContents(File dir) {
+            if (dir == null || !dir.exists()) return 0;
+            long total = 0;
+            File[] children = dir.listFiles();
+            if (children != null) {
+                for (File c : children) {
+                    if (c.isDirectory()) total += deleteDirContents(c);
+                    long len = c.length();
+                    if (c.delete()) total += len;
+                }
+            }
+            return total;
         }
 
         @JavascriptInterface

@@ -30,7 +30,9 @@ import {
 import { formatBytes, triggerFileDownload } from '../utils/formatters';
 import {
   exportDocumentAsPdf,
+  exportDocumentPagesAsZip,
   exportSinglePageAsJpeg,
+  openDocumentInNativeViewer,
   redactSensitiveInfoForSharing,
 } from '../utils/pdfExport';
 import { findOccurrencesInText } from '../utils/searchEngine';
@@ -771,23 +773,41 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center gap-2 overflow-x-auto py-0.5">
-          {doc.pages.map((pg, idx) => (
-            <button
-              key={pg.id}
-              onClick={() => setCurrentIdx(idx)}
-              className={`relative w-10 h-13 rounded-md overflow-hidden border-2 transition-all shrink-0 ${
-                idx === safeIdx
-                  ? 'border-orange-600 scale-105 shadow-sm'
-                  : 'border-transparent opacity-65 hover:opacity-100'
-              }`}
-            >
-              <PageCanvasPreview page={pg} className="w-full h-full" showWatermark={false} />
-              <span className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[9px] font-mono text-center">
-                {idx + 1}
+        <div className="flex-1 flex flex-col gap-1 min-w-0">
+          {doc.pages.length > 2 && (
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                {safeIdx + 1}/{doc.pages.length}
               </span>
-            </button>
-          ))}
+              <input
+                type="range"
+                min={0}
+                max={doc.pages.length - 1}
+                value={safeIdx}
+                onChange={(e) => setCurrentIdx(Number(e.target.value))}
+                aria-label="Page scrubber"
+                className="w-full h-1.5 accent-orange-600 cursor-pointer"
+              />
+            </div>
+          )}
+          <div className="flex items-center gap-2 overflow-x-auto py-0.5">
+            {doc.pages.map((pg, idx) => (
+              <button
+                key={pg.id}
+                onClick={() => setCurrentIdx(idx)}
+                className={`relative w-10 h-13 rounded-md overflow-hidden border-2 transition-all shrink-0 ${
+                  idx === safeIdx
+                    ? 'border-orange-600 scale-105 shadow-sm'
+                    : 'border-transparent opacity-65 hover:opacity-100'
+                }`}
+              >
+                <PageCanvasPreview page={pg} className="w-full h-full" showWatermark={false} />
+                <span className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[9px] font-mono text-center">
+                  {idx + 1}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <button
@@ -1161,6 +1181,63 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                 </div>
               </div>
             </button>
+            <button
+              type="button"
+              disabled={isExporting}
+              onClick={async () => {
+                setIsExporting(true);
+                try {
+                  await exportDocumentPagesAsZip(doc);
+                  onToast(`Exported ${doc.pages.length} page(s) as ZIP`);
+                  setShowExportSheet(false);
+                } catch {
+                  onToast('ZIP export failed');
+                } finally {
+                  setIsExporting(false);
+                }
+              }}
+              className="w-full p-4 rounded-2xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 flex items-center justify-between transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Download className="w-5 h-5 text-sky-600 dark:text-sky-400" />
+                <div className="text-left">
+                  <div className="text-sm font-semibold">Export All Pages as ZIP</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    {doc.pages.length} JPEG page(s) bundled in one .zip archive
+                  </div>
+                </div>
+              </div>
+            </button>
+            {typeof window !== 'undefined' &&
+              typeof window.FileLensAndroid?.openInNativeViewer === 'function' && (
+                <button
+                  type="button"
+                  disabled={isExporting}
+                  onClick={async () => {
+                    setIsExporting(true);
+                    try {
+                      const ok = await openDocumentInNativeViewer(doc);
+                      if (!ok) onToast('No native PDF viewer app found');
+                      setShowExportSheet(false);
+                    } catch {
+                      onToast('Could not open in external viewer');
+                    } finally {
+                      setIsExporting(false);
+                    }
+                  }}
+                  className="w-full p-4 rounded-2xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 flex items-center justify-between transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <FileText className="w-5 h-5 text-violet-600 dark:text-violet-400" />
+                    <div className="text-left">
+                      <div className="text-sm font-semibold">Open in External PDF App</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">
+                        Launch Drive PDF / Adobe / System Viewer
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              )}
             <button
               type="button"
               onClick={() => {

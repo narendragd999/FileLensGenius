@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Bookmark,
@@ -143,11 +143,20 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
     return f;
   }, [fileTypeFilter, sizeFilter, dateFilter]);
 
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQuery(query), 180);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
   const results = useMemo(
-    () => runDocumentSearch(documents, query, mode, { filters: searchFilters, sortBy, sortOrder }),
-    [documents, query, mode, searchFilters, sortBy, sortOrder]
+    () => runDocumentSearch(documents, debouncedQuery, mode, { filters: searchFilters, sortBy, sortOrder }),
+    [documents, debouncedQuery, mode, searchFilters, sortBy, sortOrder]
   );
   const [visibleResultCount, setVisibleResultCount] = useState(30);
+  useEffect(() => {
+    setVisibleResultCount(30);
+  }, [debouncedQuery, mode, searchFilters, sortBy, sortOrder]);
   const visibleResults = useMemo(
     () => results.slice(0, visibleResultCount),
     [results, visibleResultCount]
