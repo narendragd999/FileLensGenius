@@ -29,7 +29,9 @@ import { formatShortDate } from '../utils/formatters';
 import {
   computeNextOccurrenceIso,
   extractTemporalInfo,
+  TemporalExtractionResult,
 } from '../utils/temporalExtractor';
+import { ConfirmedPlanPayload, VoiceNoteConfirmModal } from './VoiceNoteConfirmModal';
 
 interface SecondBrainViewProps {
   notes: VoiceNote[];
@@ -258,6 +260,11 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
     e.target.value = '';
   };
 
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    transcript: string;
+    extraction: TemporalExtractionResult;
+  } | null>(null);
+
   const handleSaveNote = () => {
     const clean = draftText.trim();
     if (!clean) return;
@@ -265,6 +272,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
 
     let finalClass = parsed.temporalClass;
     let finalScheduledIso = parsed.scheduledDateIso;
+    let hasExplicitDate = parsed.hasExplicitDate;
 
     if (customScheduleInput) {
       const customDate = new Date(customScheduleInput);
@@ -276,36 +284,69 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
         targetStart.setHours(0, 0, 0, 0);
         const diff = targetStart.getTime() - todayStart.getTime();
         finalClass = diff > 0 ? 'upcoming' : diff < 0 ? 'history' : 'today';
+        hasExplicitDate = true;
       }
     }
 
-    const checklist = (parsed.checklistSteps.length > 0 ? parsed.checklistSteps : [clean]).map(
-      (text, idx) => ({
-        id: `step-${Date.now()}-${idx}`,
-        text,
-        done: false,
-      })
-    );
+    setPendingConfirm({
+      transcript: clean,
+      extraction: {
+        ...parsed,
+        temporalClass: finalClass,
+        scheduledDateIso: finalScheduledIso,
+        hasExplicitDate,
+      },
+    });
+  };
+
+  const handleConfirmPlan = (confirmed: ConfirmedPlanPayload) => {
+    const checklist = confirmed.checklistSteps.map((text, idx) => ({
+      id: `step-${Date.now()}-${idx}`,
+      text,
+      done: false,
+    }));
 
     const note: VoiceNote = {
       id: `vn-${Date.now()}`,
-      title: parsed.suggestedTitle,
-      transcript: clean,
-      temporalClass: finalClass,
-      scheduledDate: finalScheduledIso,
-      recurrence,
+      title: confirmed.title,
+      transcript: confirmed.transcript,
+      temporalClass: confirmed.temporalClass,
+      scheduledDate: confirmed.scheduledDateIso,
+      recurrence: confirmed.recurrence,
       checklist,
       imageDataUrls: draftImages.length > 0 ? draftImages : undefined,
       languageCode: voiceLanguage,
       createdAt: new Date().toISOString(),
     };
     onAddNote(note);
+
+    if (confirmed.scheduledDateIso) {
+      const dt = new Date(confirmed.scheduledDateIso);
+      if (!Number.isNaN(dt.getTime())) {
+        if (confirmed.setClockAlarm) {
+          window.FileLensAndroid?.setDeviceClockAlarm?.(
+            dt.getHours(),
+            dt.getMinutes(),
+            confirmed.title
+          );
+        }
+        if (confirmed.addToCalendar) {
+          window.FileLensAndroid?.openDeviceCalendarEvent?.(
+            confirmed.title,
+            dt.getTime(),
+            confirmed.transcript
+          );
+        }
+      }
+    }
+
+    setPendingConfirm(null);
     setDraftText('');
     setRecurrence('none');
     setCustomScheduleInput('');
     setDraftImages([]);
-    setActiveTab(finalClass);
-    onToast(`Filed under ${finalClass} with ${checklist.length} action step(s)`);
+    setActiveTab(confirmed.temporalClass);
+    onToast(`Filed under ${confirmed.temporalClass} with ${checklist.length} action step(s)`);
   };
 
   const handleMarkDone = (note: VoiceNote) => {
@@ -931,6 +972,17 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {pendingConfirm && (
+        <VoiceNoteConfirmModal
+          open={Boolean(pendingConfirm)}
+          initialTranscript={pendingConfirm.transcript}
+          initialExtraction={pendingConfirm.extraction}
+          initialRecurrence={recurrence}
+          onConfirm={handleConfirmPlan}
+          onDiscard={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );

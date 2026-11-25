@@ -475,7 +475,7 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
             {cleanerTab === 'exact' && (
               <div className="space-y-2.5">
                 {exactDuplicates.length === 0 ? (
-                  <p className="text-xs text-slate-500">No exact SHA-256 duplicate files found.</p>
+                  <p className="text-xs text-slate-500">No exact duplicate files found.</p>
                 ) : (
                   exactDuplicates.map((g) => (
                     <div key={g.hash} className="rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3 space-y-2">
@@ -513,7 +513,7 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
                   className="w-full h-9 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold flex items-center justify-center gap-1.5"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>{isScanningBursts ? 'Computing dHash & Sharpness…' : 'Scan Similar / Burst Photos'}</span>
+                  <span>{isScanningBursts ? 'Scanning similar & blurry photos…' : 'Scan Similar / Burst Photos'}</span>
                 </button>
                 {burstClusters.map((cluster) => (
                   <div key={cluster.clusterId} className="rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3 space-y-2">
@@ -1258,6 +1258,9 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
                           <button
                             type="button"
                             onClick={() => {
+                              if (!window.confirm(`Permanently delete "${entry.name}" from device storage?`)) {
+                                return;
+                              }
                               if (window.FileLensAndroid?.deleteNativeFile?.(entry.path)) {
                                 loadFmDirectory(fmPath);
                                 onToast(`Deleted ${entry.name}`);

@@ -112,7 +112,7 @@ async function downscaleForOcr(imageSource: string, maxDim = 1400): Promise<stri
 
 export async function runRealOcrOnImage(
   imageSource: string,
-  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng'
+  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng+hin'
 ): Promise<string> {
   try {
     const prepared = await downscaleForOcr(imageSource, 1200);
@@ -144,7 +144,7 @@ export interface OcrWordBox {
 
 export async function recognizeImageWithWordBoxes(
   imageSource: string,
-  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng'
+  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng+hin'
 ): Promise<{ text: string; words: OcrWordBox[] }> {
   try {
     const worker = await getOcrWorkerFromPool(ocrLanguage);
@@ -408,7 +408,7 @@ function renderUniversalFilePreviewCard(
 async function parsePdfFile(
   buffer: ArrayBuffer,
   defaultFilter: ScanFilterId,
-  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng'
+  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng+hin'
 ): Promise<{ pages: DocumentPage[]; combinedText: string }> {
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
   const pdf = await loadingTask.promise;

@@ -6,6 +6,8 @@ export interface TemporalExtractionResult {
   isReminderRecommended: boolean;
   suggestedTitle: string;
   checklistSteps: string[];
+  hasExplicitDate?: boolean;
+  hasExplicitTime?: boolean;
 }
 
 const ENGLISH_MONTHS: Record<string, number> = {
@@ -166,6 +168,7 @@ export function extractTemporalInfo(
   }
 
   // 4. General future cues fallback
+  const hasExplicitDate = targetDate !== null;
   if (!targetDate) {
     if (
       /\b(next month|remind|schedule|due|renew|expiry|appointment|meeting|yaad|याद)\b/i.test(lower)
@@ -208,6 +211,8 @@ export function extractTemporalInfo(
     isReminderRecommended,
     suggestedTitle: suggestedTitle || 'Voice Note',
     checklistSteps,
+    hasExplicitDate,
+    hasExplicitTime: explicit,
   };
 }
 
