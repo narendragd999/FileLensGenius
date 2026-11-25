@@ -386,33 +386,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         return;
       }
 
-      let capturedDataUrl = '';
-      const activeTrack = streamRef.current?.getVideoTracks?.()[0];
-      const ImageCaptureCtor = (
-        window as unknown as {
-          ImageCapture?: new (track: MediaStreamTrack) => { takePhoto: () => Promise<Blob> };
-        }
-      ).ImageCapture;
-
-      if (cameraZoom === 1 && activeTrack && ImageCaptureCtor) {
-        try {
-          const ic = new ImageCaptureCtor(activeTrack);
-          const photoBlob = await ic.takePhoto();
-          capturedDataUrl = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-            reader.onerror = () => resolve('');
-            reader.readAsDataURL(photoBlob);
-          });
-        } catch {
-          capturedDataUrl = '';
-        }
-      }
-
-      if (!capturedDataUrl) {
-        ctx.drawImage(video, 0, 0, outW, outH);
-        capturedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
-      }
+      ctx.drawImage(video, 0, 0, outW, outH);
+      const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.94);
+      navigator.vibrate?.(20);
 
       // Snapshot visual 8x8 luma fingerprint so Auto-Capture never duplicates the same page!
       lastCapturedFpRef.current = latestFpRef.current ? new Float32Array(latestFpRef.current) : null;
@@ -516,8 +492,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
     if (!analysisCanvasRef.current) {
       analysisCanvasRef.current = document.createElement('canvas');
-      analysisCanvasRef.current.width = 192;
-      analysisCanvasRef.current.height = 256;
+      analysisCanvasRef.current.width = 160;
+      analysisCanvasRef.current.height = 214;
     }
 
     let missedFrames = 0;
@@ -533,7 +509,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       if (!ctx) return;
 
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const analysis = analyzeCanvasFrame(canvas);
+      const analysis = analyzeCanvasFrame(canvas, true);
       latestFpRef.current = analysis.fingerprint;
 
       // Anti-Duplicate Smart Page-Change Gate (ported from LiveDocumentCameraView.kt)

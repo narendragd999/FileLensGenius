@@ -764,7 +764,86 @@ function scoreQuadCandidate(
   );
 }
 
-export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis {
+function snapQuadToOuterPaperBoundary(
+  corners: [Pt, Pt, Pt, Pt],
+  closedWhite: Float32Array,
+  gradMag: Float32Array,
+  w: number,
+  h: number
+): [Pt, Pt, Pt, Pt] {
+  const [tl, tr, br, bl] = corners;
+  const cx = (tl.x + tr.x + br.x + bl.x) * 0.25;
+  const cy = (tl.y + tr.y + br.y + bl.y) * 0.25;
+
+  const snapEdge = (a: Pt, b: Pt): Line2D => {
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const elen = Math.max(1, Math.hypot(ex, ey));
+    // Outward normal (away from quad center)
+    let ox = -ey / elen;
+    let oy = ex / elen;
+    const midX = (a.x + b.x) * 0.5;
+    const midY = (a.y + b.y) * 0.5;
+    if (ox * (midX - cx) + oy * (midY - cy) < 0) {
+      ox = -ox;
+      oy = -oy;
+    }
+
+    let bestOffset = 0;
+    let bestEdgeScore = -1;
+    for (let d = -2; d <= 10; d++) {
+      let gradSum = 0;
+      let contrastSum = 0;
+      let count = 0;
+      for (let s = 2; s <= 14; s++) {
+        const t = s / 16;
+        const px = a.x + ex * t + ox * d;
+        const py = a.y + ey * t + oy * d;
+        const ix = Math.round(px);
+        const iy = Math.round(py);
+        if (ix < 3 || ix >= w - 3 || iy < 3 || iy >= h - 3) continue;
+        const inX = Math.max(0, Math.min(w - 1, Math.round(px - ox * 4)));
+        const inY = Math.max(0, Math.min(h - 1, Math.round(py - oy * 4)));
+        const outX = Math.max(0, Math.min(w - 1, Math.round(px + ox * 4)));
+        const outY = Math.max(0, Math.min(h - 1, Math.round(py + oy * 4)));
+        const stepW = closedWhite[inY * w + inX] - closedWhite[outY * w + outX];
+        gradSum += gradMag[iy * w + ix];
+        if (stepW > 0) contrastSum += Math.min(35, stepW);
+        count++;
+      }
+      if (count < 4) continue;
+      const sc = (gradSum / count) * 1.1 + (contrastSum / count) * 1.3;
+      if (sc > bestEdgeScore) {
+        bestEdgeScore = sc;
+        bestOffset = d;
+      }
+    }
+
+    const sa = { x: a.x + ox * bestOffset, y: a.y + oy * bestOffset };
+    const sb = { x: b.x + ox * bestOffset, y: b.y + oy * bestOffset };
+    const dx = sb.x - sa.x;
+    const dy = sb.y - sa.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const la = -dy / len;
+    const lb = dx / len;
+    const lc = -(la * sa.x + lb * sa.y);
+    return { a: la, b: lb, c: lc };
+  };
+
+  const lTop = snapEdge(tl, tr);
+  const lRight = snapEdge(tr, br);
+  const lBottom = snapEdge(br, bl);
+  const lLeft = snapEdge(bl, tl);
+
+  const pTL = intersectLines(lTop, lLeft);
+  const pTR = intersectLines(lTop, lRight);
+  const pBR = intersectLines(lBottom, lRight);
+  const pBL = intersectLines(lBottom, lLeft);
+  if (!pTL || !pTR || !pBR || !pBL) return corners;
+  return orderCorners([pTL, pTR, pBR, pBL]);
+}
+
+export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false): LiveFrameAnalysis {
   const width = canvas.width;
   const height = canvas.height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -791,9 +870,10 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
     whiteness[i] = Math.max(0, lum - chroma * 0.75);
   }
 
-  // 2. Morphological Closing (5x5): erases dark text, table lines & creases inside paper
-  const closedGray = morphClose(rawGray, width, height, 2);
-  const closedWhite = morphClose(whiteness, width, height, 2);
+  // 2. Morphological Closing (3x3 in live preview for 60fps, 5x5 on capture for maximum accuracy)
+  const closeRadius = fastMode ? 1 : 2;
+  const closedGray = morphClose(rawGray, width, height, closeRadius);
+  const closedWhite = morphClose(whiteness, width, height, closeRadius);
 
   // 3. Sobel gradient magnitude on closedGray (only true region boundaries survive)
   const gradMag = new Float32Array(totalPx);
@@ -840,9 +920,9 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
   const thresholds = Array.from(
     new Set([
       otsu,
-      Math.max(85, Math.min(230, Math.round(centerPaperRef - 26))),
-      Math.max(95, Math.min(235, Math.round(centerPaperRef - 16))),
-      Math.max(105, Math.min(240, Math.round(centerPaperRef - 9))),
+      Math.max(70, Math.min(220, Math.round(centerPaperRef - 38))),
+      Math.max(85, Math.min(230, Math.round(centerPaperRef - 24))),
+      Math.max(95, Math.min(235, Math.round(centerPaperRef - 14))),
     ])
   );
 
@@ -869,20 +949,37 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
     return { quad: null, confidence: 0, fingerprint };
   }
 
-  const [pTL, pTR, pBR, pBL] = bestCorners;
-  // Tight 0.1% paper edge hug so no desk border leaks into the cropped scan
-  const pad = 0.001;
-  const clamp01 = (v: number) => Math.max(0.01, Math.min(0.99, v));
+  // Snap edges outward to true paper-to-desk gradient so shaded margins are never clipped
+  const snapped = snapQuadToOuterPaperBoundary(bestCorners, closedWhite, gradMag, width, height);
+  const snappedScore = scoreQuadCandidate(snapped, closedWhite, gradMag, width, height, centerPaperRef);
+  const finalCorners = snappedScore >= bestScore * 0.9 ? snapped : bestCorners;
+
+  const [pTL, pTR, pBR, pBL] = finalCorners;
+  const clamp01 = (v: number) => Math.max(0.0, Math.min(1.0, v));
   const quad: NormalizedQuad = {
-    tlX: clamp01(pTL.x / width - pad),
-    tlY: clamp01(pTL.y / height - pad),
-    trX: clamp01(pTR.x / width + pad),
-    trY: clamp01(pTR.y / height - pad),
-    brX: clamp01(pBR.x / width + pad),
-    brY: clamp01(pBR.y / height + pad),
-    blX: clamp01(pBL.x / width - pad),
-    blY: clamp01(pBL.y / height + pad),
+    tlX: clamp01(pTL.x / width),
+    tlY: clamp01(pTL.y / height),
+    trX: clamp01(pTR.x / width),
+    trY: clamp01(pTR.y / height),
+    brX: clamp01(pBR.x / width),
+    brY: clamp01(pBR.y / height),
+    blX: clamp01(pBL.x / width),
+    blY: clamp01(pBL.y / height),
   };
+
+  // If all 4 edges sit within 4.5% of the frame border, treat as full-frame document
+  if (
+    quad.tlX <= 0.045 &&
+    quad.tlY <= 0.045 &&
+    quad.trX >= 0.955 &&
+    quad.trY <= 0.045 &&
+    quad.brX >= 0.955 &&
+    quad.brY >= 0.955 &&
+    quad.blX <= 0.045 &&
+    quad.blY >= 0.955
+  ) {
+    return { quad: FULL_QUAD, confidence: bestScore, fingerprint };
+  }
 
   return { quad, confidence: bestScore, fingerprint };
 }
