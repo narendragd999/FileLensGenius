@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpDown,
   Bookmark,
@@ -44,7 +44,7 @@ interface SearchHubViewProps {
   onCancelIndexing: () => void;
   onSaveSearch: (query: string, mode: SearchMode) => void;
   onDeleteSavedSearch: (id: string) => void;
-  onOpenDocumentAtPage: (docId: string, pageIndex: number) => void;
+  onOpenDocumentAtPage: (docId: string, pageIndex: number, searchQuery?: string) => void;
   onOpenOrganizer: (docId: string) => void;
   onToast: (message: string) => void;
 }
@@ -161,6 +161,18 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
     () => results.slice(0, visibleResultCount),
     [results, visibleResultCount]
   );
+  const resultRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const jumpToHit = (nextIdx: number) => {
+    if (results.length === 0) return;
+    const wrapped = (nextIdx + results.length) % results.length;
+    if (wrapped >= visibleResultCount) {
+      setVisibleResultCount(Math.min(results.length, wrapped + 15));
+    }
+    setActiveMatchIdx(wrapped);
+    window.setTimeout(() => {
+      resultRefs.current.get(wrapped)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 40);
+  };
 
   const activeFilterCount =
     (fileTypeFilter !== 'all' ? 1 : 0) +
@@ -415,21 +427,29 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() =>
-                    setActiveMatchIdx((i) => (i - 1 + results.length) % results.length)
-                  }
+                  onClick={() => jumpToHit(safeMatchIdx - 1)}
                   aria-label="Previous match"
-                  className="w-6 h-6 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center"
+                  className="w-7 h-7 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-orange-500"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveMatchIdx((i) => (i + 1) % results.length)}
+                  onClick={() => jumpToHit(safeMatchIdx + 1)}
                   aria-label="Next match"
-                  className="w-6 h-6 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center"
+                  className="w-7 h-7 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-orange-500"
                 >
                   <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const hit = results[safeMatchIdx];
+                    if (hit) onOpenDocumentAtPage(hit.doc.id, hit.pageIndex, query.trim());
+                  }}
+                  className="px-2 h-7 rounded-md bg-orange-600 text-white text-[10px] font-semibold"
+                >
+                  Open
                 </button>
               </div>
             )}
@@ -485,7 +505,11 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
               return (
                 <div
                   key={item.doc.id}
-                  onClick={() => onOpenDocumentAtPage(item.doc.id, item.pageIndex)}
+                  ref={(el) => {
+                    if (el) resultRefs.current.set(idx, el);
+                    else resultRefs.current.delete(idx);
+                  }}
+                  onClick={() => onOpenDocumentAtPage(item.doc.id, item.pageIndex, query.trim())}
                   className={`px-2.5 py-2.5 sm:px-3.5 sm:py-3 cursor-pointer transition-colors flex gap-2.5 sm:gap-3 ${
                     isFocused
                       ? 'bg-orange-50/70 dark:bg-orange-950/25'

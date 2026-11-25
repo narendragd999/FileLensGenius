@@ -46,6 +46,7 @@ import { PageCanvasPreview } from './PageCanvasPreview';
 interface PdfViewerModalProps {
   document: ScanDocument;
   initialPageIndex?: number;
+  initialFindQuery?: string;
   savedSignatures: SavedSignature[];
   onSaveSignature: (sig: SavedSignature) => void;
   onDeleteSavedSignature: (id: string) => void;
@@ -58,6 +59,7 @@ interface PdfViewerModalProps {
 export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   document: doc,
   initialPageIndex = 0,
+  initialFindQuery,
   savedSignatures,
   onSaveSignature,
   onDeleteSavedSignature,
@@ -70,8 +72,8 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
     Math.max(0, Math.min(initialPageIndex, doc.pages.length - 1))
   );
   const [zoom, setZoom] = useState<number>(1);
-  const [showFindBar, setShowFindBar] = useState<boolean>(false);
-  const [findQuery, setFindQuery] = useState<string>('');
+  const [showFindBar, setShowFindBar] = useState<boolean>(Boolean(initialFindQuery?.trim()));
+  const [findQuery, setFindQuery] = useState<string>(initialFindQuery?.trim() ?? '');
   const [showOcrDrawer, setShowOcrDrawer] = useState<boolean>(false);
   const [drawerTab, setDrawerTab] = useState<'ocr' | 'smart_data'>('ocr');
   const [showWatermarkModal, setShowWatermarkModal] = useState<boolean>(false);

@@ -115,7 +115,7 @@ export default function App() {
     mode: ScanMode;
     appendToDocId?: string;
   }>({ open: false, mode: 'batch' });
-  const [viewerState, setViewerState] = useState<{ docId: string; pageIndex: number } | null>(null);
+  const [viewerState, setViewerState] = useState<{ docId: string; pageIndex: number; query?: string } | null>(null);
   const [organizerDocId, setOrganizerDocId] = useState<string | null>(null);
   const [smartToast, setSmartToast] = useState<SmartToastItem | null>(null);
 
@@ -1254,7 +1254,9 @@ export default function App() {
                 onDeleteSavedSearch={(id) =>
                   setSavedSearches((prev) => prev.filter((s) => s.id !== id))
                 }
-                onOpenDocumentAtPage={(docId, pageIndex) => setViewerState({ docId, pageIndex })}
+                onOpenDocumentAtPage={(docId, pageIndex, query) =>
+                  setViewerState({ docId, pageIndex, query })
+                }
                 onOpenOrganizer={(docId) => setOrganizerDocId(docId)}
                 onToast={showToast}
               />
@@ -1519,6 +1521,7 @@ export default function App() {
         <PdfViewerModal
           document={activeViewerDoc}
           initialPageIndex={viewerState?.pageIndex ?? 0}
+          initialFindQuery={viewerState?.query}
           savedSignatures={savedSignatures}
           onSaveSignature={(sig) => setSavedSignatures((prev) => [sig, ...prev])}
           onDeleteSavedSignature={(id) =>
