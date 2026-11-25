@@ -83,6 +83,8 @@ export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = ({
           <img
             src={page.imageUrl}
             alt="Scanned document page"
+            loading="lazy"
+            decoding="async"
             referrerPolicy="no-referrer"
             onError={() => setImgError(true)}
             className={`w-full h-full object-contain ${filterClass} ${

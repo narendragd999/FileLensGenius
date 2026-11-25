@@ -337,10 +337,31 @@ export default function App() {
       try {
         while (androidBatchQueueRef.current.length > 0 && !controller.signal.aborted) {
           const item = androidBatchQueueRef.current.shift()!;
-          const batchFiles = item.items
-            ? item.items.map((m) => materializeAndroidNativeFile(m))
-            : item.files || [];
-          if (batchFiles.length === 0) continue;
+          let batchFiles: File[] = [];
+          if (item.items && item.items.length > 0) {
+            const existingFpSet = new Set<string>();
+            for (const d of documentsRef.current) {
+              if (d.fileFingerprint) existingFpSet.add(d.fileFingerprint);
+            }
+            for (const m of item.items) {
+              if (controller.signal.aborted) break;
+              const fp = `${m.path}|${m.size}|${m.lastModified}`;
+              if (existingFpSet.has(fp)) {
+                androidStatsRef.current.skippedUnchanged += 1;
+                androidStatsRef.current.totalScanned += 1;
+                continue;
+              }
+              batchFiles.push(materializeAndroidNativeFile(m));
+              // Yield 16ms per unindexed file read so WebView UI stays responsive
+              await new Promise((resolve) => window.setTimeout(resolve, 16));
+            }
+          } else {
+            batchFiles = item.files || [];
+          }
+          if (batchFiles.length === 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, 10));
+            continue;
+          }
 
           const result = await runSmartIndexingPipeline({
             files: batchFiles,

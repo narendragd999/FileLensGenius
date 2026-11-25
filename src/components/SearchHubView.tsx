@@ -147,6 +147,11 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
     () => runDocumentSearch(documents, query, mode, { filters: searchFilters, sortBy, sortOrder }),
     [documents, query, mode, searchFilters, sortBy, sortOrder]
   );
+  const [visibleResultCount, setVisibleResultCount] = useState(30);
+  const visibleResults = useMemo(
+    () => results.slice(0, visibleResultCount),
+    [results, visibleResultCount]
+  );
 
   const activeFilterCount =
     (fileTypeFilter !== 'all' ? 1 : 0) +
@@ -465,7 +470,7 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           </div>
         ) : (
           <div className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8 overflow-hidden">
-            {results.map((item, idx) => {
+            {visibleResults.map((item, idx) => {
               const isFocused = idx === safeMatchIdx;
               const matchedPage = item.doc.pages[item.pageIndex] ?? item.doc.pages[0];
               return (
@@ -535,6 +540,17 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 </div>
               );
             })}
+            {visibleResultCount < results.length && (
+              <div className="flex justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => setVisibleResultCount((c) => Math.min(results.length, c + 30))}
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/10 text-xs font-semibold text-slate-700 dark:text-slate-200"
+                >
+                  Showing {visibleResults.length} of {results.length} · Load more
+                </button>
+              </div>
+            )}
           </div>
         )
       ) : (

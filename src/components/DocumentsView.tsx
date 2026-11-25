@@ -131,7 +131,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       });
   }, [documents, selectedFolderId, selectedTag, filterQuery, sortBy]);
 
-  const PAGE_SIZE = 40;
+  const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 

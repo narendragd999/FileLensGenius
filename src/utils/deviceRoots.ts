@@ -78,7 +78,7 @@ export function materializeAndroidNativeFile(meta: AndroidNativeFileMeta): File 
   let file: File;
   try {
     const b64 =
-      meta.size <= 12 * 1024 * 1024 && typeof window.FileLensAndroid?.readFileBase64 === 'function'
+      meta.size <= 6 * 1024 * 1024 && typeof window.FileLensAndroid?.readFileBase64 === 'function'
         ? window.FileLensAndroid.readFileBase64(meta.path)
         : '';
     if (b64 && b64.length > 0) {
