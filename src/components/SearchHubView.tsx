@@ -50,12 +50,12 @@ interface SearchHubViewProps {
 }
 
 const SEARCH_MODES: { id: SearchMode; label: string; hint: string }[] = [
-  { id: 'quick', label: 'Quick Search', hint: 'Partial + bilingual Hinglish/concept expansion across ALL indexed device files (try "bill", "doctor", "pdf")' },
-  { id: 'natural', label: 'Natural Language', hint: '384-dim offline semantic vector similarity across all files & OCR text' },
-  { id: 'exact', label: 'Exact Match', hint: 'Exact phrase substring match across PDFs, Office, OCR photos, code & filenames' },
-  { id: 'whole', label: 'Whole Word', hint: 'Strict word boundary matching across indexed content' },
+  { id: 'quick', label: 'Quick Search', hint: 'Matches English, Hindi & Hinglish words automatically (e.g. "Tulsidas" finds "तुलसीदास")' },
+  { id: 'natural', label: 'Smart Meaning', hint: 'Finds related documents by meaning even if exact words differ (100% offline)' },
+  { id: 'exact', label: 'Exact Phrase', hint: 'Finds the exact words or numbers in order across PDFs, photos & Office files' },
+  { id: 'whole', label: 'Whole Word', hint: 'Matches complete words only (ignores partial word matches)' },
   { id: 'wildcard', label: 'Wildcard', hint: 'Use * and ? wildcards (try "inv*" or "2026-??")' },
-  { id: 'boolean', label: 'Boolean', hint: 'Combine AND / OR / NOT operators (try "Invoice AND Paid")' },
+  { id: 'boolean', label: 'Boolean', hint: 'Combine AND / OR / NOT (try "Invoice AND Paid")' },
 ];
 
 const FILE_TYPE_FILTERS: { id: 'all' | FileCategory; label: string }[] = [
@@ -69,7 +69,7 @@ const FILE_TYPE_FILTERS: { id: 'all' | FileCategory; label: string }[] = [
   { id: 'other', label: 'Other' },
 ];
 
-const QUICK_CONCEPTS = ['Invoice', 'Receipt', 'Contract', 'Medical', 'ID Card', 'Tax'];
+const QUICK_CONCEPTS = ['Invoice', 'Bijli Bill', 'Dawai', 'Aadhaar', 'Receipt', 'Medical', 'ID Card', 'Tax'];
 
 function highlightText(text: string, terms: string[]): React.ReactNode {
   if (!terms.length) return text;

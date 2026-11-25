@@ -955,6 +955,24 @@ export default function App() {
     { id: 'settings', label: 'Tools', icon: <Settings className="w-5 h-5" /> },
   ];
 
+  // Close full-screen modals cleanly on Android hardware Back button
+  const hasOpenModal = scannerState.open || Boolean(viewerState) || Boolean(organizerDocId);
+  useEffect(() => {
+    if (!hasOpenModal) return;
+    window.history.pushState({ filelensModal: true }, '');
+    const onPopState = () => {
+      if (scannerState.open) {
+        setScannerState({ open: false, mode: 'batch' });
+      } else if (organizerDocId) {
+        setOrganizerDocId(null);
+      } else if (viewerState) {
+        setViewerState(null);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [hasOpenModal, scannerState.open, organizerDocId, viewerState]);
+
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden flex bg-[#F2F2F7] dark:bg-[#000000] text-slate-900 dark:text-[#F5F5F7]">
       {/* Desktop Left Sidebar Rail */}
@@ -1202,8 +1220,12 @@ export default function App() {
                 onMergeDocuments={handleMergeDocuments}
                 onDeleteDocuments={(docIds) => {
                   const idSet = new Set(docIds);
+                  const deletedDocs = documents.filter((d) => idSet.has(d.id));
                   setDocuments((prev) => prev.filter((d) => !idSet.has(d.id)));
-                  showToast(`Deleted ${docIds.length} document(s)`);
+                  showToast(`Deleted ${docIds.length} document(s)`, {
+                    label: 'Undo',
+                    action: () => setDocuments((prev) => [...deletedDocs, ...prev]),
+                  });
                 }}
                 onToast={showToast}
               />
@@ -1466,7 +1488,11 @@ export default function App() {
             setDocuments((prev) => [newDoc, ...prev]);
             setScannerState({ open: false, mode: 'batch' });
             setActiveTab('documents');
-            setOrganizerDocId(newDoc.id);
+            if (newDoc.pages.length > 1) {
+              setOrganizerDocId(newDoc.id);
+            } else {
+              setViewerState({ docId: newDoc.id, pageIndex: 0 });
+            }
             showToast(
               `Saved & indexed "${newDoc.title}" (${newDoc.pages.length} page${newDoc.pages.length > 1 ? 's' : ''})`
             );

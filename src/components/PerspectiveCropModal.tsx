@@ -303,11 +303,11 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
         {activeCorner && (
           <div className="pointer-events-none absolute top-4 right-4 z-20 w-24 h-24 rounded-full border-2 border-orange-500 overflow-hidden shadow-2xl bg-black">
             <img
-              src={page.imageUrl}
+              src={rawImageUrl}
               alt="Magnifier"
               className="w-full h-full object-contain"
               style={{
-                transform: `scale(3.2) translate(${(0.5 - activeCorner.x) * 100}%, ${(0.5 - activeCorner.y) * 100}%)`,
+                transform: `scale(3.2) translate(${(0.5 - activeCorner.x) * 100}%, ${(0.5 - activeCorner.y) * 100}%) rotate(${rotation}deg)`,
                 transformOrigin: 'center center',
               }}
             />

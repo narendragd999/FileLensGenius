@@ -13,6 +13,7 @@ import {
   RefreshCw,
   RotateCw,
   Search,
+  Share2,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -34,6 +35,7 @@ import {
   exportSinglePageAsJpeg,
   openDocumentInNativeViewer,
   redactSensitiveInfoForSharing,
+  shareDocumentAsPdf,
 } from '../utils/pdfExport';
 import { findOccurrencesInText } from '../utils/searchEngine';
 import { runRealOcrOnImage } from '../utils/smartIndexer';
@@ -535,9 +537,9 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
       {/* Main Viewer Canvas + Optional Side OCR Drawer */}
       <div className="flex-1 flex overflow-hidden relative">
         <div
-          className="flex-1 overflow-auto flex items-center justify-center p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative"
+          className="flex-1 overflow-auto flex p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative"
           onTouchStart={(e) => {
-            if (e.touches.length === 1) touchStartXRef.current = e.touches[0].clientX;
+            if (e.touches.length === 1 && zoom <= 1.05) touchStartXRef.current = e.touches[0].clientX;
           }}
           onTouchEnd={(e) => {
             if (touchStartXRef.current === null || e.changedTouches.length === 0) return;
@@ -547,36 +549,48 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
             else if (dx < -55) setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1));
           }}
         >
-          {/* Floating Page Indicator Pill */}
-          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/70 text-white text-xs font-mono font-semibold backdrop-blur-md shadow flex items-center gap-2 pointer-events-auto">
-            <button
-              type="button"
-              onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
-              disabled={safeIdx === 0}
-              aria-label="Previous page"
-              className="disabled:opacity-35 hover:text-orange-400"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-            </button>
-            <span>
-              Page {safeIdx + 1} / {doc.pages.length}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1))}
-              disabled={safeIdx >= doc.pages.length - 1}
-              aria-label="Next page"
-              className="disabled:opacity-35 hover:text-orange-400"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          {/* Floating Page Indicator Pill (hidden while Find bar is open) */}
+          {!showFindBar && (
+            <div className="fixed top-16 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/70 text-white text-xs font-mono font-semibold backdrop-blur-md shadow flex items-center gap-2 pointer-events-auto">
+              <button
+                type="button"
+                onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
+                disabled={safeIdx === 0}
+                aria-label="Previous page"
+                className="disabled:opacity-35 hover:text-orange-400"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span>
+                Page {safeIdx + 1} / {doc.pages.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1))}
+                disabled={safeIdx >= doc.pages.length - 1}
+                aria-label="Next page"
+                className="disabled:opacity-35 hover:text-orange-400"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              {zoom !== 1 && (
+                <button
+                  type="button"
+                  onClick={() => setZoom(1)}
+                  className="ml-1 px-1.5 py-0.5 rounded bg-white/15 hover:bg-white/25 text-[10px]"
+                  title="Reset zoom to 100%"
+                >
+                  {Math.round(zoom * 100)}%
+                </button>
+              )}
+            </div>
+          )}
           {currentPage ? (
-            <div
-              className="transition-transform duration-150 origin-center"
-              style={{ transform: `scale(${zoom})` }}
-            >
-              <div className="w-[min(86vw,540px)] aspect-[3/4] rounded-md shadow-xl overflow-hidden bg-white border border-slate-300/60 dark:border-white/10">
+            <div className="m-auto shrink-0">
+              <div
+                style={{ width: `calc(min(86vw, 540px) * ${zoom})` }}
+                className="aspect-[3/4] rounded-md shadow-xl overflow-hidden bg-white border border-slate-300/60 dark:border-white/10 transition-[width] duration-150"
+              >
                 <PageCanvasPreview
                   page={currentPage}
                   watermark={doc.watermark}
@@ -1208,6 +1222,38 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                 </div>
               </div>
             </button>
+            {typeof window !== 'undefined' &&
+              typeof window.FileLensAndroid?.shareFileViaNativeChooser === 'function' && (
+                <button
+                  type="button"
+                  disabled={isExporting}
+                  onClick={async () => {
+                    setIsExporting(true);
+                    try {
+                      const ok = await shareDocumentAsPdf(doc);
+                      if (!ok) onToast('Could not open share sheet');
+                      setShowExportSheet(false);
+                    } catch {
+                      onToast('Share failed');
+                    } finally {
+                      setIsExporting(false);
+                    }
+                  }}
+                  className="w-full p-4 rounded-2xl bg-orange-50 dark:bg-orange-950/30 hover:bg-orange-100 dark:hover:bg-orange-950/50 flex items-center justify-between transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <Share2 className="w-5 h-5 text-orange-600 dark:text-orange-400" />
+                    <div className="text-left">
+                      <div className="text-sm font-semibold text-orange-900 dark:text-orange-200">
+                        Share PDF (WhatsApp / Email)
+                      </div>
+                      <div className="text-xs text-orange-700 dark:text-orange-400">
+                        Send {doc.pages.length}-page PDF via Android Share Sheet
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              )}
             {typeof window !== 'undefined' &&
               typeof window.FileLensAndroid?.openInNativeViewer === 'function' && (
                 <button

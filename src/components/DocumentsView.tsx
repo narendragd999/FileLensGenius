@@ -428,9 +428,26 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       {/* Batch Multi-Select Action Bar */}
       {selectMode && (
         <div className="bg-white dark:bg-[#1C1C1E] rounded-xl px-3 py-2 border border-orange-200 dark:border-orange-900/60 flex items-center justify-between gap-2 flex-wrap">
-          <span className="text-xs font-semibold text-orange-700 dark:text-orange-300">
-            {selectedDocIds.size} selected
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-orange-700 dark:text-orange-300">
+              {selectedDocIds.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedDocIds.size === filteredDocs.length) {
+                  setSelectedDocIds(new Set());
+                } else {
+                  setSelectedDocIds(new Set(filteredDocs.map((d) => d.id)));
+                }
+              }}
+              className="h-7 px-2 rounded-lg bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 text-[11px] font-semibold"
+            >
+              {selectedDocIds.size === filteredDocs.length && filteredDocs.length > 0
+                ? 'Clear'
+                : 'Select All'}
+            </button>
+          </div>
           <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"

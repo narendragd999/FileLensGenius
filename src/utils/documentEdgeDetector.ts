@@ -589,7 +589,8 @@ function scoreQuadCandidate(
   closedWhite: Float32Array,
   gradMag: Float32Array,
   w: number,
-  h: number
+  h: number,
+  centerPaperRef: number
 ): number {
   const [tl, tr, br, bl] = corners;
 
@@ -730,9 +731,37 @@ function scoreQuadCandidate(
   const edgeQuality = edgeSupportSum / 4;
   if (edgeQuality < 0.32) return 0;
 
+  // Interior paper uniformity check: reject quads that swallow dark keyboards/desks
+  let interiorHits = 0;
+  let interiorDark = 0;
+  let interiorTotal = 0;
+  const darkCutoff = Math.max(60, centerPaperRef - 36);
+  const paperCutoff = Math.max(85, centerPaperRef - 24);
+  for (let gy = 1; gy <= 6; gy++) {
+    const v = 0.08 + (0.84 * (gy - 1)) / 5;
+    for (let gx = 1; gx <= 6; gx++) {
+      const u = 0.08 + (0.84 * (gx - 1)) / 5;
+      const topX = tl.x + (tr.x - tl.x) * u;
+      const topY = tl.y + (tr.y - tl.y) * u;
+      const botX = bl.x + (br.x - bl.x) * u;
+      const botY = bl.y + (br.y - bl.y) * u;
+      const sx = Math.max(0, Math.min(w - 1, Math.round(topX + (botX - topX) * v)));
+      const sy = Math.max(0, Math.min(h - 1, Math.round(topY + (botY - topY) * v)));
+      const val = closedWhite[sy * w + sx];
+      interiorTotal++;
+      if (val >= paperCutoff) interiorHits++;
+      if (val < darkCutoff) interiorDark++;
+    }
+  }
+  if (interiorTotal > 0 && interiorDark / interiorTotal > 0.22) return 0;
+  const interiorQuality = interiorTotal > 0 ? interiorHits / interiorTotal : 0.7;
+
   const shapeQuality = (angleQuality + wRatio + hRatio) / 3;
   const areaBonus = Math.min(1, areaRatio / 0.55);
-  return Math.min(0.98, edgeQuality * 0.5 + shapeQuality * 0.35 + areaBonus * 0.15);
+  return Math.min(
+    0.98,
+    edgeQuality * 0.42 + interiorQuality * 0.28 + shapeQuality * 0.20 + areaBonus * 0.10
+  );
 }
 
 export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis {
@@ -790,29 +819,46 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
     }
   }
 
-  // 4. Generate candidate quads from complementary pipelines
+  // 4. Generate candidate quads from Otsu + center-seeded paper thresholds (separates white paper from grey desks)
   const otsu = computeOtsuThreshold(closedWhite);
-  const candidates: [Pt, Pt, Pt, Pt][] = [];
+  const centerSamples: number[] = [];
+  const cy0 = Math.floor(height * 0.36);
+  const cy1 = Math.floor(height * 0.64);
+  const cx0 = Math.floor(width * 0.36);
+  const cx1 = Math.floor(width * 0.64);
+  for (let y = cy0; y < cy1; y += 2) {
+    for (let x = cx0; x < cx1; x += 2) {
+      centerSamples.push(closedWhite[y * width + x]);
+    }
+  }
+  centerSamples.sort((a, b) => a - b);
+  const centerPaperRef =
+    centerSamples.length > 0
+      ? centerSamples[Math.floor(centerSamples.length * 0.65)]
+      : 170;
 
-  const c1 = detectQuadFromComponent(closedWhite, gradMag, width, height, otsu);
-  if (c1) candidates.push(c1);
-
-  const c2 = detectQuadFromComponent(
-    closedWhite,
-    gradMag,
-    width,
-    height,
-    Math.min(220, otsu + 12)
+  const thresholds = Array.from(
+    new Set([
+      otsu,
+      Math.max(85, Math.min(230, Math.round(centerPaperRef - 26))),
+      Math.max(95, Math.min(235, Math.round(centerPaperRef - 16))),
+      Math.max(105, Math.min(240, Math.round(centerPaperRef - 9))),
+    ])
   );
-  if (c2) candidates.push(c2);
 
-  const c3 = detectQuadFromClosedScanlines(closedGray, closedWhite, width, height);
-  if (c3) candidates.push(c3);
+  const candidates: [Pt, Pt, Pt, Pt][] = [];
+  for (const t of thresholds) {
+    const c = detectQuadFromComponent(closedWhite, gradMag, width, height, t);
+    if (c) candidates.push(c);
+  }
+
+  const cScan = detectQuadFromClosedScanlines(closedGray, closedWhite, width, height);
+  if (cScan) candidates.push(cScan);
 
   let bestCorners: [Pt, Pt, Pt, Pt] | null = null;
   let bestScore = 0;
   for (const cand of candidates) {
-    const s = scoreQuadCandidate(cand, closedWhite, gradMag, width, height);
+    const s = scoreQuadCandidate(cand, closedWhite, gradMag, width, height, centerPaperRef);
     if (s > bestScore) {
       bestScore = s;
       bestCorners = cand;

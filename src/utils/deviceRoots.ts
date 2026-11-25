@@ -66,6 +66,7 @@ export interface FileLensAndroidBridge {
   openDeviceCalendarEvent?: (title: string, startEpochMs: number, description: string) => boolean;
   saveToPublicDocuments?: (fileName: string, mimeType: string, base64Data: string) => string;
   openInNativeViewer?: (fileName: string, mimeType: string, base64Data: string) => boolean;
+  shareFileViaNativeChooser?: (fileName: string, mimeType: string, base64Data: string) => boolean;
   clearNativeAppCache?: () => number;
 }
 

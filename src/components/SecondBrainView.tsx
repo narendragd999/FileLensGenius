@@ -443,7 +443,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
             aria-label={isListening ? 'Stop voice capture' : 'Start voice capture'}
             className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 transition-all ${
               isListening
-                ? 'bg-red-600 text-white shadow-lg shadow-red-600/25'
+                ? 'bg-red-600 text-white shadow-lg shadow-red-600/25 animate-pulse ring-4 ring-red-500/30'
                 : 'bg-orange-600 hover:bg-orange-700 text-white'
             }`}
           >
@@ -453,10 +453,20 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
             rows={2}
             value={draftText}
             onChange={(e) => setDraftText(e.target.value)}
-            placeholder='Speak or type (English / Hinglish / Hindi): "Kal shaam 6 baje bijli bill bharna hai aur receipt scan karni hai…"'
+            placeholder={
+              isListening
+                ? 'Listening… speak naturally (tap red mic to pause)'
+                : 'Speak or type (English / Hinglish / Hindi): "Kal shaam 6 baje bijli bill bharna hai aur receipt scan karni hai…"'
+            }
             className="flex-1 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
           />
         </div>
+        {isListening && (
+          <div className="flex items-center gap-2 text-[11px] font-semibold text-red-600 dark:text-red-400">
+            <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
+            <span>Listening live… tap the red mic button when finished</span>
+          </div>
+        )}
 
         {/* Attached Photos Preview */}
         {draftImages.length > 0 && (

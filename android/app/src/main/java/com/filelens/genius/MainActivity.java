@@ -154,6 +154,10 @@ public class MainActivity extends BridgeActivity {
                 ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1003);
             }
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, 1004);
+        }
     }
 
     @Override
@@ -654,21 +658,22 @@ public class MainActivity extends BridgeActivity {
                     ? "Internal & SD Card (" + roots.size() + " volumes)"
                     : "Internal Device Storage";
 
-                List<File> priorityFiles = new ArrayList<>();
                 List<File> otherFiles = new ArrayList<>();
+                JSONArray liveBatch = new JSONArray();
+                int priorityCount = 0;
                 int foldersScanned = 0;
                 final int MAX_FILES = 10000;
 
                 ArrayDeque<File> queue = new ArrayDeque<>(roots);
                 while (!queue.isEmpty() && !cancelRequested.get()
-                        && (priorityFiles.size() + otherFiles.size()) < MAX_FILES) {
+                        && (priorityCount + otherFiles.size()) < MAX_FILES) {
                     File dir = queue.poll();
                     if (dir == null || !dir.isDirectory()) continue;
                     foldersScanned++;
 
                     if (foldersScanned % 12 == 1) {
                         dispatchProgress(
-                            priorityFiles.size() + otherFiles.size(),
+                            priorityCount + otherFiles.size(),
                             foldersScanned,
                             dir.getAbsolutePath()
                         );
@@ -690,7 +695,23 @@ public class MainActivity extends BridgeActivity {
                             int dot = name.lastIndexOf('.');
                             String ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : "";
                             if (DOC_OR_IMAGE_EXTS.contains(ext)) {
-                                priorityFiles.add(f);
+                                priorityCount++;
+                                try {
+                                    String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                                    if (mime == null) mime = "application/octet-stream";
+                                    JSONObject obj = new JSONObject();
+                                    obj.put("name", name);
+                                    obj.put("path", f.getAbsolutePath());
+                                    obj.put("size", f.length());
+                                    obj.put("mime", mime);
+                                    obj.put("lastModified", f.lastModified());
+                                    liveBatch.put(obj);
+                                    if (liveBatch.length() >= 20) {
+                                        dispatchMetaBatchToWebView(liveBatch, sourceLabel, priorityCount + otherFiles.size(), priorityCount);
+                                        liveBatch = new JSONArray();
+                                    }
+                                } catch (Exception ignored) {
+                                }
                             } else {
                                 otherFiles.add(f);
                             }
@@ -698,19 +719,19 @@ public class MainActivity extends BridgeActivity {
                     }
                 }
 
-                priorityFiles.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+                if (liveBatch.length() > 0 && !cancelRequested.get()) {
+                    dispatchMetaBatchToWebView(liveBatch, sourceLabel, priorityCount + otherFiles.size(), priorityCount);
+                }
+
                 otherFiles.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-
-                List<File> allFiles = new ArrayList<>(priorityFiles.size() + otherFiles.size());
-                allFiles.addAll(priorityFiles);
-                allFiles.addAll(otherFiles);
-
-                final int totalFound = Math.min(allFiles.size(), MAX_FILES);
+                final int totalFound = Math.min(priorityCount + otherFiles.size(), MAX_FILES);
+                final int remainingCap = Math.max(0, MAX_FILES - priorityCount);
+                final int otherCount = Math.min(otherFiles.size(), remainingCap);
                 JSONArray batch = new JSONArray();
 
-                for (int i = 0; i < totalFound; i++) {
+                for (int i = 0; i < otherCount; i++) {
                     if (cancelRequested.get()) break;
-                    File f = allFiles.get(i);
+                    File f = otherFiles.get(i);
                     try {
                         String name = f.getName();
                         int dot = name.lastIndexOf('.');
@@ -727,7 +748,7 @@ public class MainActivity extends BridgeActivity {
                         batch.put(obj);
 
                         if (batch.length() >= 20) {
-                            dispatchMetaBatchToWebView(batch, sourceLabel, totalFound, i + 1);
+                            dispatchMetaBatchToWebView(batch, sourceLabel, totalFound, priorityCount + i + 1);
                             batch = new JSONArray();
                         }
                     } catch (Exception ignored) {
@@ -855,8 +876,20 @@ public class MainActivity extends BridgeActivity {
                             }
                         })
                         .addOnFailureListener(e -> {
-                            bmp.recycle();
-                            dispatchMlKitOcrResult(requestId, "");
+                            if (useDevanagari) {
+                                getLatinRecognizer().process(image)
+                                    .addOnSuccessListener(fb -> {
+                                        bmp.recycle();
+                                        dispatchMlKitOcrResult(requestId, fb != null && fb.getText() != null ? fb.getText().trim() : "");
+                                    })
+                                    .addOnFailureListener(e2 -> {
+                                        bmp.recycle();
+                                        dispatchMlKitOcrResult(requestId, "");
+                                    });
+                            } else {
+                                bmp.recycle();
+                                dispatchMlKitOcrResult(requestId, "");
+                            }
                         });
                 } catch (Exception e) {
                     dispatchMlKitOcrResult(requestId, "");
@@ -1025,6 +1058,30 @@ public class MainActivity extends BridgeActivity {
                     .setDataAndType(uri, mimeType != null ? mimeType : "application/pdf")
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean shareFileViaNativeChooser(String fileName, String mimeType, String base64Data) {
+            try {
+                String b64 = base64Data;
+                int comma = b64.indexOf(',');
+                if (comma >= 0) b64 = b64.substring(comma + 1);
+                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                String safeName = (fileName == null || fileName.trim().isEmpty()) ? "FileLens_Share.pdf" : fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+                File outFile = new File(getCacheDir(), safeName);
+                try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                    fos.write(bytes);
+                }
+                Uri uri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", outFile);
+                Intent share = new Intent(Intent.ACTION_SEND)
+                    .setType(mimeType != null ? mimeType : "application/pdf")
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(share, "Share " + safeName));
                 return true;
             } catch (Exception e) {
                 return false;

@@ -429,14 +429,7 @@ export async function exportDocumentAsPdf(
   pdf.save(`${safeName}.pdf`);
 }
 
-export async function openDocumentInNativeViewer(doc: ScanDocument): Promise<boolean> {
-  if (
-    doc.pages.length === 0 ||
-    typeof window === 'undefined' ||
-    typeof window.FileLensAndroid?.openInNativeViewer !== 'function'
-  ) {
-    return false;
-  }
+async function buildPortablePdfDataUri(doc: ScanDocument): Promise<{ safeName: string; dataUri: string }> {
   const safeName = doc.title.replace(/[^a-zA-Z0-9._ -]/g, '').trim() || 'FileLens_Document';
   const firstRendered = await renderPageToDataUrl(doc.pages[0], doc.watermark, doc.qualityPreset);
   const firstOri = firstRendered.width > firstRendered.height ? 'landscape' : 'portrait';
@@ -452,11 +445,31 @@ export async function openDocumentInNativeViewer(doc: ScanDocument): Promise<boo
     const dh = rendered.height * ratio;
     pdf.addImage(rendered.dataUrl, 'JPEG', (w - dw) / 2, (h - dh) / 2, dw, dh, undefined, 'FAST');
   }
-  return window.FileLensAndroid.openInNativeViewer(
-    `${safeName}.pdf`,
-    'application/pdf',
-    pdf.output('datauristring')
-  );
+  return { safeName, dataUri: pdf.output('datauristring') };
+}
+
+export async function openDocumentInNativeViewer(doc: ScanDocument): Promise<boolean> {
+  if (
+    doc.pages.length === 0 ||
+    typeof window === 'undefined' ||
+    typeof window.FileLensAndroid?.openInNativeViewer !== 'function'
+  ) {
+    return false;
+  }
+  const { safeName, dataUri } = await buildPortablePdfDataUri(doc);
+  return window.FileLensAndroid.openInNativeViewer(`${safeName}.pdf`, 'application/pdf', dataUri);
+}
+
+export async function shareDocumentAsPdf(doc: ScanDocument): Promise<boolean> {
+  if (
+    doc.pages.length === 0 ||
+    typeof window === 'undefined' ||
+    typeof window.FileLensAndroid?.shareFileViaNativeChooser !== 'function'
+  ) {
+    return false;
+  }
+  const { safeName, dataUri } = await buildPortablePdfDataUri(doc);
+  return window.FileLensAndroid.shareFileViaNativeChooser(`${safeName}.pdf`, 'application/pdf', dataUri);
 }
 
 export async function exportDocumentPagesAsZip(doc: ScanDocument): Promise<void> {

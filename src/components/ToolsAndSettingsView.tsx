@@ -946,7 +946,11 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               </label>
               <button
                 type="button"
-                onClick={onClearWorkspace}
+                onClick={() => {
+                  if (window.confirm('Clear all indexed documents, voice notes, and local vault data? This cannot be undone.')) {
+                    onClearWorkspace();
+                  }
+                }}
                 className="min-h-[38px] px-3 rounded-xl text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-1.5 ml-auto"
               >
                 <Trash2 className="w-3.5 h-3.5" />
