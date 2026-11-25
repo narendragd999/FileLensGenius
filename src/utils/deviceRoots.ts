@@ -37,8 +37,51 @@ export interface FileLensAndroidBridge {
   hasAllFilesAccess?: () => boolean;
   requestAllFilesAccess?: () => boolean | void;
   startDeviceIndex?: (filtersJson?: string) => boolean | void;
+  cancelDeviceIndex?: () => void;
+  readFileBase64?: (path: string) => string;
   getAndroidApiLevel?: () => number;
   getStorageRootPath?: () => string;
+}
+
+export interface AndroidNativeFileMeta {
+  name: string;
+  path: string;
+  size: number;
+  mime: string;
+  lastModified: number;
+}
+
+export function materializeAndroidNativeFile(meta: AndroidNativeFileMeta): File {
+  let file: File;
+  try {
+    const b64 =
+      meta.size <= 12 * 1024 * 1024 && typeof window.FileLensAndroid?.readFileBase64 === 'function'
+        ? window.FileLensAndroid.readFileBase64(meta.path)
+        : '';
+    if (b64 && b64.length > 0) {
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      file = new File([arr], meta.name, {
+        type: meta.mime || 'application/octet-stream',
+        lastModified: meta.lastModified,
+      });
+    } else {
+      file = new File(
+        [`Device file: ${meta.path} (${meta.size} bytes)`],
+        meta.name,
+        { type: meta.mime || 'application/octet-stream', lastModified: meta.lastModified }
+      );
+    }
+  } catch {
+    file = new File(
+      [`Device file: ${meta.path} (${meta.size} bytes)`],
+      meta.name,
+      { type: meta.mime || 'application/octet-stream', lastModified: meta.lastModified }
+    );
+  }
+  (file as File & { nativePath?: string }).nativePath = meta.path;
+  return file;
 }
 
 declare global {
@@ -146,6 +189,17 @@ export function triggerAndroidNativeDeviceIndex(filters: DeviceIndexFilters): bo
     // Ignore bridge call failure
   }
   return false;
+}
+
+export function cancelAndroidNativeDeviceIndex(): void {
+  if (typeof window === 'undefined' || !window.FileLensAndroid) return;
+  try {
+    if (typeof window.FileLensAndroid.cancelDeviceIndex === 'function') {
+      window.FileLensAndroid.cancelDeviceIndex();
+    }
+  } catch {
+    // Ignore bridge call failure
+  }
 }
 
 const IGNORED_SYSTEM_DIRS = new Set([
@@ -293,7 +347,7 @@ export const DEFAULT_DEVICE_INDEX_FILTERS: DeviceIndexFilters = {
   includeMediaAndArchives: true,
   includeAllOtherFiles: true,
   skipSystemFolders: true,
-  maxFilesPerRun: 500,
+  maxFilesPerRun: 2500,
 };
 
 export function classifyFileCategory(fileName: string, mimeType = ''): FileCategory {

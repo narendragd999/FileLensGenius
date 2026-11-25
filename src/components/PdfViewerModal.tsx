@@ -11,6 +11,7 @@ import {
   Layers,
   PenTool,
   Search,
+  ShieldCheck,
   Trash2,
   X,
   ZoomIn,
@@ -22,8 +23,13 @@ import {
   ScanDocument,
   WatermarkConfig,
 } from '../types/filelens';
-import { formatBytes } from '../utils/formatters';
-import { exportDocumentAsPdf, exportSinglePageAsJpeg } from '../utils/pdfExport';
+import { formatBytes, triggerFileDownload } from '../utils/formatters';
+import {
+  exportDocumentAsPdf,
+  exportSinglePageAsJpeg,
+  redactSensitiveInfoForSharing,
+} from '../utils/pdfExport';
+import { extractSmartData } from '../utils/temporalExtractor';
 import { PageCanvasPreview } from './PageCanvasPreview';
 
 interface PdfViewerModalProps {
@@ -56,9 +62,11 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   const [showFindBar, setShowFindBar] = useState<boolean>(false);
   const [findQuery, setFindQuery] = useState<string>('');
   const [showOcrDrawer, setShowOcrDrawer] = useState<boolean>(false);
+  const [drawerTab, setDrawerTab] = useState<'ocr' | 'smart_data'>('ocr');
   const [showWatermarkModal, setShowWatermarkModal] = useState<boolean>(false);
   const [showSignatureModal, setShowSignatureModal] = useState<boolean>(false);
   const [showExportSheet, setShowExportSheet] = useState<boolean>(false);
+  const [pdfPasswordInput, setPdfPasswordInput] = useState<string>('');
   const [isExporting, setIsExporting] = useState<boolean>(false);
 
   // Watermark editor state
@@ -199,14 +207,47 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
     onToast(`Cleared signatures on Page ${safeIdx + 1}`);
   };
 
+  const smartData = useMemo(
+    () => extractSmartData(doc.pages.map((p) => p.ocrText).join('\n')),
+    [doc.pages]
+  );
+
   const handleExportPdf = async () => {
     setIsExporting(true);
     try {
-      await exportDocumentAsPdf(doc);
-      onToast(`Downloaded "${doc.title}.pdf"`);
+      await exportDocumentAsPdf(doc, doc.passwordProtected ? pdfPasswordInput : undefined);
+      onToast(
+        doc.passwordProtected && pdfPasswordInput.trim()
+          ? `Downloaded encrypted "${doc.title}.pdf"`
+          : `Downloaded "${doc.title}.pdf"`
+      );
       setShowExportSheet(false);
     } catch {
       onToast('Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleMaskAndShare = async () => {
+    if (!currentPage) return;
+    setIsExporting(true);
+    try {
+      const { redactedDataUrl, redactedCount } = await redactSensitiveInfoForSharing(
+        currentPage.imageUrl
+      );
+      const res = await fetch(redactedDataUrl);
+      const blob = await res.blob();
+      const safeName = doc.title.replace(/[^a-zA-Z0-9._ -]/g, '').trim() || 'Scan';
+      triggerFileDownload(blob, `${safeName}_Page${safeIdx + 1}_Masked.jpg`);
+      onToast(
+        redactedCount > 0
+          ? `Masked ${redactedCount} sensitive field(s) & exported safely`
+          : 'Exported with privacy footer (no Aadhaar/PAN/phone detected)'
+      );
+      setShowExportSheet(false);
+    } catch {
+      onToast('Privacy redaction failed');
     } finally {
       setIsExporting(false);
     }
@@ -421,11 +462,11 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
           </div>
         </div>
 
-        {/* OCR Side Inspector */}
+        {/* OCR & Smart Data Side Inspector */}
         {showOcrDrawer && currentPage && (
           <aside className="w-full sm:w-80 bg-white dark:bg-[#1C1C1E] border-l border-slate-200 dark:border-white/10 p-4 flex flex-col gap-3 shrink-0 absolute inset-y-0 right-0 sm:static z-20 shadow-xl sm:shadow-none">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold">Extracted OCR · Page {safeIdx + 1}</h3>
+              <h3 className="text-sm font-bold">Inspector · Page {safeIdx + 1}</h3>
               <div className="flex items-center gap-1">
                 <button
                   onClick={copyOcrText}
@@ -442,9 +483,82 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3.5 text-sm leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-wrap">
-              {currentPage.ocrText || 'No OCR text indexed for this page.'}
+
+            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#2C2C2E]">
+              <button
+                type="button"
+                onClick={() => setDrawerTab('ocr')}
+                className={`py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  drawerTab === 'ocr'
+                    ? 'bg-white dark:bg-[#1C1C1E] text-orange-600 shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                OCR Text
+              </button>
+              <button
+                type="button"
+                onClick={() => setDrawerTab('smart_data')}
+                className={`py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  drawerTab === 'smart_data'
+                    ? 'bg-white dark:bg-[#1C1C1E] text-orange-600 shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Smart Data
+              </button>
             </div>
+
+            {drawerTab === 'ocr' ? (
+              <div className="flex-1 overflow-y-auto rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3.5 text-sm leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-wrap">
+                {currentPage.ocrText || 'No OCR text indexed for this page.'}
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {(
+                  [
+                    { label: 'IDs (PAN / Aadhaar)', items: smartData.ids },
+                    { label: 'Amounts', items: smartData.amounts },
+                    { label: 'Dates', items: smartData.dates },
+                    { label: 'Phones', items: smartData.phones },
+                    { label: 'Emails', items: smartData.emails },
+                  ] as const
+                ).map((group) =>
+                  group.items.length > 0 ? (
+                    <div key={group.label} className="space-y-1.5">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        {group.label}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.items.map((val) => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(val).catch(() => undefined);
+                              onToast(`Copied "${val}"`);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 border border-slate-200 dark:border-white/10 text-xs font-mono text-slate-800 dark:text-slate-200 flex items-center gap-1"
+                          >
+                            <span>{val}</span>
+                            <Copy className="w-3 h-3 text-slate-400" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null
+                )}
+                {smartData.ids.length === 0 &&
+                  smartData.amounts.length === 0 &&
+                  smartData.dates.length === 0 &&
+                  smartData.phones.length === 0 &&
+                  smartData.emails.length === 0 && (
+                    <p className="text-xs text-slate-500 text-center py-8">
+                      No structured dates, amounts, phones, emails, or IDs detected yet.
+                    </p>
+                  )}
+              </div>
+            )}
           </aside>
         )}
       </div>
@@ -784,6 +898,20 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
+            {doc.passwordProtected && (
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 space-y-1.5">
+                <label className="text-xs font-semibold text-amber-800 dark:text-amber-200 block">
+                  PDF Encryption Password (Optional)
+                </label>
+                <input
+                  type="password"
+                  value={pdfPasswordInput}
+                  onChange={(e) => setPdfPasswordInput(e.target.value)}
+                  placeholder="Enter password to encrypt PDF…"
+                  className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#2C2C2E] border border-amber-200 dark:border-white/10 text-xs"
+                />
+              </div>
+            )}
             <button
               type="button"
               disabled={isExporting}
@@ -798,6 +926,24 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                   </div>
                   <div className="text-xs text-orange-100">
                     {doc.pages.length} page(s) · {doc.pageSizePreset.toUpperCase()} · {doc.qualityPreset} quality
+                  </div>
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              disabled={isExporting}
+              onClick={handleMaskAndShare}
+              className="w-full p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/50 hover:bg-emerald-100 dark:hover:bg-emerald-950/60 flex items-center justify-between transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                <div className="text-left">
+                  <div className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">
+                    Mask & Share Safely
+                  </div>
+                  <div className="text-xs text-emerald-700 dark:text-emerald-400">
+                    Auto-redacts Aadhaar, PAN, phone & account numbers
                   </div>
                 </div>
               </div>

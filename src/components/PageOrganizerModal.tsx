@@ -31,7 +31,8 @@ import {
 } from '../types/filelens';
 import { SCAN_FILTERS } from '../data/seedData';
 import { formatBytes } from '../utils/formatters';
-import { exportDocumentAsPdf } from '../utils/pdfExport';
+import { compressDocumentPagesReal, exportDocumentAsPdf } from '../utils/pdfExport';
+import { runRealOcrOnImage } from '../utils/smartIndexer';
 import { PageCanvasPreview } from './PageCanvasPreview';
 import { PerspectiveCropModal } from './PerspectiveCropModal';
 
@@ -260,12 +261,24 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     onToast(`Merged ${mergedPages.length} page(s) from "${sourceDoc.title}"`);
   };
 
-  const handleCompressPdf = (preset: (typeof COMPRESS_PRESETS)[number]) => {
-    const newSize = Math.max(85_000, Math.round(doc.sizeBytes * preset.ratio));
-    const saved = Math.max(0, doc.sizeBytes - newSize);
-    commitPages(doc.pages, newSize, { qualityPreset: preset.qualityPreset });
-    setShowCompressSheet(false);
-    onToast(`Compressed with ${preset.label} · Saved ${formatBytes(saved)}`);
+  const handleCompressPdf = async (preset: (typeof COMPRESS_PRESETS)[number]) => {
+    setIsExporting(true);
+    try {
+      const { updatedDoc, savedBytes, didCompress } = await compressDocumentPagesReal(doc, preset.id);
+      setShowCompressSheet(false);
+      if (didCompress) {
+        commitPages(updatedDoc.pages, updatedDoc.sizeBytes, {
+          qualityPreset: updatedDoc.qualityPreset,
+        });
+        onToast(`Compressed with ${preset.label} · Saved ${formatBytes(savedBytes)}`);
+      } else {
+        onToast('Pages are already optimally compressed (<8% savings)');
+      }
+    } catch {
+      onToast('Compression failed on this document');
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleImportImageFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -275,16 +288,18 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
       (file, idx) =>
         new Promise<DocumentPage>((resolve) => {
           const reader = new FileReader();
-          reader.onload = () => {
+          reader.onload = async () => {
+            const dataUrl = String(reader.result);
+            const ocrText = await runRealOcrOnImage(dataUrl).catch(() => '');
             resolve({
               id: `pg-imp-${Date.now()}-${idx}`,
-              imageUrl: String(reader.result),
+              imageUrl: dataUrl,
               rotation: 0,
               filter: 'magic',
               quad: FULL_QUAD,
               brightness: 1,
               contrast: 1,
-              ocrText: `Imported page ${file.name} appended via FileLens Page Organizer.`,
+              ocrText: ocrText || `Imported page ${file.name}`,
               signatures: [],
             });
           };
@@ -293,7 +308,7 @@ export const PageOrganizerModal: React.FC<PageOrganizerModalProps> = ({
     );
     Promise.all(readers).then((newPages) => {
       commitPages([...doc.pages, ...newPages]);
-      onToast(`Appended ${newPages.length} image page${newPages.length > 1 ? 's' : ''}`);
+      onToast(`Appended ${newPages.length} OCR-indexed page${newPages.length > 1 ? 's' : ''}`);
     });
     e.target.value = '';
   };

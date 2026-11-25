@@ -31,10 +31,19 @@ import { formatBytes } from './formatters';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 let ocrWorkerPromise: Promise<Worker> | null = null;
+let ocrWorkerLang: string = 'eng';
 
-async function getOcrWorker(): Promise<Worker> {
-  if (!ocrWorkerPromise) {
-    ocrWorkerPromise = createWorker('eng').catch((err) => {
+async function getOcrWorker(lang: string = 'eng'): Promise<Worker> {
+  if (!ocrWorkerPromise || ocrWorkerLang !== lang) {
+    if (ocrWorkerPromise) {
+      ocrWorkerPromise.then((w) => w.terminate().catch(() => undefined)).catch(() => undefined);
+    }
+    ocrWorkerLang = lang;
+    ocrWorkerPromise = createWorker(lang).catch(async (err) => {
+      if (lang !== 'eng') {
+        ocrWorkerLang = 'eng';
+        return createWorker('eng');
+      }
       ocrWorkerPromise = null;
       throw err;
     });
@@ -42,13 +51,44 @@ async function getOcrWorker(): Promise<Worker> {
   return ocrWorkerPromise;
 }
 
-export async function runRealOcrOnImage(imageSource: string): Promise<string> {
+export async function runRealOcrOnImage(
+  imageSource: string,
+  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng'
+): Promise<string> {
   try {
-    const worker = await getOcrWorker();
+    const worker = await getOcrWorker(ocrLanguage);
     const { data } = await worker.recognize(imageSource);
     return (data.text || '').replace(/\s+/g, ' ').trim();
   } catch {
     return '';
+  }
+}
+
+export interface OcrWordBox {
+  text: string;
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+}
+
+export async function recognizeImageWithWordBoxes(
+  imageSource: string,
+  ocrLanguage: 'eng+hin' | 'eng' | 'hin' = 'eng'
+): Promise<{ text: string; words: OcrWordBox[] }> {
+  try {
+    const worker = await getOcrWorker(ocrLanguage);
+    const { data } = await worker.recognize(imageSource);
+    const rawWords = (data as unknown as { words?: Array<{ text?: string; bbox?: { x0: number; y0: number; x1: number; y1: number } }> }).words || [];
+    const words: OcrWordBox[] = rawWords
+      .filter((w) => w.text && w.bbox)
+      .map((w) => ({
+        text: w.text!.trim(),
+        bbox: w.bbox!,
+      }));
+    return {
+      text: (data.text || '').replace(/\s+/g, ' ').trim(),
+      words,
+    };
+  } catch {
+    return { text: '', words: [] };
   }
 }
 
@@ -360,6 +400,7 @@ export interface SmartIndexRunOptions {
   sourceLabel: string;
   filePathMap?: WeakMap<File, string>;
   filters?: DeviceIndexFilters;
+  ocrLanguage?: 'eng+hin' | 'eng' | 'hin';
   forceReindex?: boolean;
   signal?: AbortSignal;
   onProgress: (progress: IndexProgress) => void;
@@ -388,6 +429,7 @@ export async function runSmartIndexingPipeline(
     sourceLabel,
     filePathMap,
     filters,
+    ocrLanguage = 'eng+hin',
     forceReindex = false,
     signal,
     onProgress,
@@ -397,6 +439,7 @@ export async function runSmartIndexingPipeline(
   const filteredPool = files.filter((f) => {
     const rel =
       filePathMap?.get(f) ||
+      (f as File & { nativePath?: string }).nativePath ||
       (f as File & { webkitRelativePath?: string }).webkitRelativePath ||
       f.name;
 
@@ -442,6 +485,7 @@ export async function runSmartIndexingPipeline(
     const category = classifyFileCategory(file.name, file.type);
     const relPath =
       filePathMap?.get(file) ||
+      (file as File & { nativePath?: string }).nativePath ||
       (file as File & { webkitRelativePath?: string }).webkitRelativePath ||
       file.name;
     const fingerprint = `${relPath}|${file.size}|${file.lastModified}`;
@@ -516,7 +560,7 @@ export async function runSmartIndexingPipeline(
         ocrText = stripXmlTags(svgRaw).slice(0, 12_000);
       } else {
         const [extractedOcr, quad] = await Promise.all([
-          runRealOcrOnImage(dataUrl),
+          runRealOcrOnImage(dataUrl, ocrLanguage),
           detectQuadFromImageUrl(dataUrl),
         ]);
         ocrText = extractedOcr;

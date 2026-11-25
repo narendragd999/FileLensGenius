@@ -234,3 +234,37 @@ export function findSemanticDuplicates(
 
   return groups;
 }
+
+export interface RelatedCardMatch {
+  doc: ScanDocument;
+  similarity: number;
+}
+
+/**
+ * Find up to 3 related Smart Cards via 384-dim cosine similarity >= 0.30.
+ */
+export function findRelatedCards(
+  target: ScanDocument,
+  allCards: ScanDocument[],
+  threshold = 0.30,
+  limit = 3
+): RelatedCardMatch[] {
+  const targetText = `${target.title} ${target.cardCategory || ''} ${target.tags.join(' ')} ${target.pages
+    .map((p) => p.ocrText)
+    .join(' ')}`.slice(0, 1400);
+  const targetVec = generateEmbedding(targetText);
+
+  const matches: RelatedCardMatch[] = [];
+  for (const card of allCards) {
+    if (card.id === target.id) continue;
+    const text = `${card.title} ${card.cardCategory || ''} ${card.tags.join(' ')} ${card.pages
+      .map((p) => p.ocrText)
+      .join(' ')}`.slice(0, 1400);
+    const sim = cosineSimilarity(targetVec, generateEmbedding(text));
+    if (sim >= threshold) {
+      matches.push({ doc: card, similarity: sim });
+    }
+  }
+
+  return matches.sort((a, b) => b.similarity - a.similarity).slice(0, limit);
+}

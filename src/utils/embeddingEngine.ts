@@ -1,4 +1,7 @@
 import { IndexedChunk } from '../types/filelens';
+import { toUniversalSoundex } from './multilingualEngine';
+
+export { toUniversalSoundex };
 
 /**
  * Direct TypeScript port of FileLensMobile's EmbeddingEngine.kt:
@@ -20,29 +23,7 @@ export function normalizeMultilingualText(text: string): string {
     .trim();
 }
 
-export function toUniversalSoundex(word: string): string {
-  const clean = word.replace(/[^a-z]/g, '');
-  if (clean.length < 2) return clean;
-  const first = clean[0];
-  const map: Record<string, string> = {
-    b: '1', f: '1', p: '1', v: '1',
-    c: '2', g: '2', j: '2', k: '2', q: '2', s: '2', x: '2', z: '2',
-    d: '3', t: '3',
-    l: '4',
-    m: '5', n: '5',
-    r: '6',
-  };
-  let out = first;
-  let lastCode = map[first] ?? '';
-  for (let i = 1; i < clean.length && out.length < 4; i++) {
-    const code = map[clean[i]] ?? '';
-    if (code && code !== lastCode) {
-      out += code;
-    }
-    if (code) lastCode = code;
-  }
-  return out;
-}
+// Universal Soundex is imported from multilingualEngine.ts (Latin + Devanagari unified phonetic mapping)
 
 function fnv1aHash(str: string, seed = 0): number {
   let hash = (2166136261 ^ seed) | 0;

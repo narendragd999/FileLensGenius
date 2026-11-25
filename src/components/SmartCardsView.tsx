@@ -3,23 +3,37 @@ import {
   AlertTriangle,
   BellPlus,
   Calendar,
+  Copy,
   CreditCard,
   Eye,
   EyeOff,
+  FileText,
   IdCard,
   Layers,
+  Lock,
   Plus,
   ShieldCheck,
+  Sparkles,
   X,
 } from 'lucide-react';
 import { ScanDocument, SmartCardCategory } from '../types/filelens';
 import { SMART_CARD_CATEGORIES } from '../data/seedData';
-import { computeExpiryRadar, formatBytes, formatShortDate } from '../utils/formatters';
+import {
+  computeExpiryRadar,
+  formatBytes,
+  formatShortDate,
+  triggerFileDownload,
+} from '../utils/formatters';
+import { redactSensitiveInfoForSharing } from '../utils/pdfExport';
+import { findRelatedCards } from '../utils/smartTaxonomy';
+import { extractSmartData } from '../utils/temporalExtractor';
 import { PageCanvasPreview } from './PageCanvasPreview';
 
 interface SmartCardsViewProps {
   documents: ScanDocument[];
   privacyBlur: boolean;
+  biometricCardsLock?: boolean;
+  cardsPinCode?: string;
   onTogglePrivacyBlur: () => void;
   onLaunchIdScanner: () => void;
   onPromoteDocumentToCard: (
@@ -28,7 +42,7 @@ interface SmartCardsViewProps {
     expiryDate?: string
   ) => void;
   onUpdateCardExpiry: (docId: string, expiryDate: string) => void;
-  onScheduleExpiryReminder: (doc: ScanDocument, expiryDate: string) => void;
+  onScheduleExpiryReminder: (doc: ScanDocument, expiryDate: string, daysBefore?: number) => void;
   onOpenViewer: (docId: string) => void;
   onOpenOrganizer: (docId: string) => void;
   onToast: (message: string) => void;
@@ -37,6 +51,8 @@ interface SmartCardsViewProps {
 export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
   documents,
   privacyBlur,
+  biometricCardsLock = false,
+  cardsPinCode = '',
   onTogglePrivacyBlur,
   onLaunchIdScanner,
   onPromoteDocumentToCard,
@@ -54,6 +70,10 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
   const [promoteExpiry, setPromoteExpiry] = useState<string>('');
   const [editingExpiryDoc, setEditingExpiryDoc] = useState<ScanDocument | null>(null);
   const [expiryDraft, setExpiryDraft] = useState<string>('');
+  const [detailCard, setDetailCard] = useState<ScanDocument | null>(null);
+  const [isMasking, setIsMasking] = useState<boolean>(false);
+  const [isVaultUnlocked, setIsVaultUnlocked] = useState<boolean>(!biometricCardsLock);
+  const [pinAttempt, setPinAttempt] = useState<string>('');
 
   const cards = useMemo(() => documents.filter((d) => d.isSmartCard), [documents]);
   const nonCardDocs = useMemo(() => documents.filter((d) => !d.isSmartCard), [documents]);
@@ -86,6 +106,86 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
     if (urgency === 'upcoming') return `Expires in ${days}d`;
     return `Valid · ${days}d left`;
   };
+
+  const relatedCards = useMemo(
+    () => (detailCard ? findRelatedCards(detailCard, cards) : []),
+    [detailCard, cards]
+  );
+
+  const detailSmartData = useMemo(
+    () =>
+      detailCard
+        ? extractSmartData(detailCard.pages.map((p) => p.ocrText).join('\n'))
+        : { dates: [], amounts: [], phones: [], emails: [], ids: [] },
+    [detailCard]
+  );
+
+  const handleMaskAndShareCard = async (card: ScanDocument) => {
+    if (!card.pages[0]) return;
+    setIsMasking(true);
+    try {
+      const { redactedDataUrl, redactedCount } = await redactSensitiveInfoForSharing(
+        card.pages[0].imageUrl
+      );
+      const res = await fetch(redactedDataUrl);
+      const blob = await res.blob();
+      const safeName = card.title.replace(/[^a-zA-Z0-9._ -]/g, '').trim() || 'SmartCard';
+      triggerFileDownload(blob, `${safeName}_Masked.jpg`);
+      onToast(
+        redactedCount > 0
+          ? `Masked ${redactedCount} sensitive field(s) & exported safely`
+          : 'Exported with privacy footer'
+      );
+    } catch {
+      onToast('Privacy masking failed');
+    } finally {
+      setIsMasking(false);
+    }
+  };
+
+  if (biometricCardsLock && !isVaultUnlocked) {
+    return (
+      <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-8 sm:p-12 text-center max-w-md mx-auto mt-6 space-y-4">
+        <div className="w-14 h-14 rounded-2xl bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 flex items-center justify-center mx-auto">
+          <Lock className="w-7 h-7" />
+        </div>
+        <div>
+          <h2 className="text-base font-bold text-slate-900 dark:text-white">
+            Smart Cards Vault Locked
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            {cardsPinCode
+              ? 'Enter your vault PIN to access Govt IDs, Medical & Finance cards.'
+              : 'Tap Unlock to verify access to your Smart Cards Wallet.'}
+          </p>
+        </div>
+        {cardsPinCode && (
+          <input
+            type="password"
+            value={pinAttempt}
+            onChange={(e) => setPinAttempt(e.target.value)}
+            placeholder="Enter Vault PIN…"
+            className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-sm text-center tracking-widest"
+          />
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (!cardsPinCode || pinAttempt === cardsPinCode) {
+              setIsVaultUnlocked(true);
+              setPinAttempt('');
+              onToast('Smart Cards Vault unlocked');
+            } else {
+              onToast('Incorrect Vault PIN');
+            }
+          }}
+          className="w-full h-11 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold"
+        >
+          Unlock Smart Cards
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -179,14 +279,28 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => onScheduleExpiryReminder(item.doc, item.expiryDate)}
-                  className="min-h-[36px] px-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-950/60 text-xs font-semibold flex items-center gap-1.5 self-start sm:self-center shrink-0 whitespace-nowrap"
-                >
-                  <BellPlus className="w-3.5 h-3.5" />
-                  <span>Set Renewal Alert</span>
-                </button>
+                <div className="flex items-center gap-1.5 self-start sm:self-center shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => onScheduleExpiryReminder(item.doc, item.expiryDate)}
+                    className="min-h-[34px] px-2.5 rounded-xl bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-950/60 text-xs font-semibold flex items-center gap-1 whitespace-nowrap"
+                  >
+                    <BellPlus className="w-3.5 h-3.5" />
+                    <span>Alert</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onScheduleExpiryReminder(item.doc, item.expiryDate, 30);
+                      onScheduleExpiryReminder(item.doc, item.expiryDate, 7);
+                      onScheduleExpiryReminder(item.doc, item.expiryDate, 1);
+                      onToast(`Scheduled 30d, 7d & 1d renewal alerts for "${item.doc.title}"`);
+                    }}
+                    className="min-h-[34px] px-2.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 text-slate-700 dark:text-slate-200 text-xs font-semibold whitespace-nowrap"
+                  >
+                    30d/7d/1d
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -255,7 +369,7 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
           {visibleCards.map((card) => (
             <div
               key={card.id}
-              onClick={() => onOpenViewer(card.id)}
+              onClick={() => setDetailCard(card)}
               className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-4 cursor-pointer hover:border-slate-300 dark:hover:border-white/20 transition-all flex flex-col gap-3"
             >
               <div className="relative aspect-[4/3] rounded-xl bg-slate-100 dark:bg-[#121214] p-2 overflow-hidden">
@@ -459,6 +573,148 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
                 Save Date
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rich Card Detail Modal with Smart Data, Mask & Share Safely, and Related Cards */}
+      {detailCard && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setDetailCard(null)}
+        >
+          <div
+            className="w-full sm:max-w-lg bg-white dark:bg-[#1C1C1E] rounded-t-3xl sm:rounded-3xl p-5 pb-safe space-y-4 max-h-[88vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-orange-600 dark:text-orange-400">
+                  {detailCard.cardCategory ?? 'Personal'}
+                </span>
+                <h3 className="text-base font-bold truncate">{detailCard.title}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetailCard(null)}
+                className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {detailCard.pages[0] && (
+              <div className="aspect-[16/10] rounded-2xl bg-slate-100 dark:bg-[#121214] p-2 overflow-hidden">
+                <PageCanvasPreview
+                  page={detailCard.pages[0]}
+                  blurContent={privacyBlur}
+                  className="w-full h-full rounded-xl"
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const id = detailCard.id;
+                  setDetailCard(null);
+                  onOpenViewer(id);
+                }}
+                className="py-2.5 px-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Open PDF</span>
+              </button>
+              <button
+                type="button"
+                disabled={isMasking}
+                onClick={() => handleMaskAndShareCard(detailCard)}
+                className="py-2.5 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>{isMasking ? 'Masking…' : 'Mask & Share'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const txt = detailCard.pages.map((p) => p.ocrText).join('\n').trim();
+                  if (txt) {
+                    navigator.clipboard?.writeText(txt).catch(() => undefined);
+                    onToast('Copied card OCR text');
+                  } else {
+                    onToast('No OCR text on this card');
+                  }
+                }}
+                className="py-2.5 px-2 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copy OCR</span>
+              </button>
+            </div>
+
+            {/* Smart Data Chips */}
+            {(detailSmartData.ids.length > 0 ||
+              detailSmartData.dates.length > 0 ||
+              detailSmartData.amounts.length > 0 ||
+              detailSmartData.phones.length > 0) && (
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Detected Smart Data (Tap to Copy)
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    ...detailSmartData.ids,
+                    ...detailSmartData.dates,
+                    ...detailSmartData.amounts,
+                    ...detailSmartData.phones,
+                  ].map((val) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(val).catch(() => undefined);
+                        onToast(`Copied "${val}"`);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] text-xs font-mono flex items-center gap-1"
+                    >
+                      <span>{val}</span>
+                      <Copy className="w-3 h-3 text-slate-400" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Related Cards */}
+            {relatedCards.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-white/10">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                  <Sparkles className="w-3.5 h-3.5 text-orange-500" />
+                  <span>Related Smart Cards</span>
+                </div>
+                <div className="space-y-1.5">
+                  {relatedCards.map((rel) => (
+                    <button
+                      key={rel.doc.id}
+                      type="button"
+                      onClick={() => setDetailCard(rel.doc)}
+                      className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/30 flex items-center justify-between text-left"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold truncate">{rel.doc.title}</div>
+                        <div className="text-[11px] text-slate-500">
+                          {rel.doc.cardCategory ?? 'Personal'}
+                        </div>
+                      </div>
+                      <span className="text-[11px] font-mono text-orange-600 dark:text-orange-400 shrink-0">
+                        {Math.round(rel.similarity * 100)}% match
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

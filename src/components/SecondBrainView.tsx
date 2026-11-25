@@ -1,10 +1,14 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
+  Bell,
   Calendar,
   Check,
+  CheckCircle2,
+  Clock,
   Copy,
   FileText,
   Globe,
+  ImagePlus,
   Link2,
   Mic,
   MicOff,
@@ -21,12 +25,20 @@ import {
   VoiceNote,
 } from '../types/filelens';
 import { VOICE_LANGUAGES } from '../data/seedData';
-import { classifyVoiceTranscript, formatShortDate } from '../utils/formatters';
+import { formatShortDate } from '../utils/formatters';
+import {
+  computeNextOccurrenceIso,
+  extractTemporalInfo,
+} from '../utils/temporalExtractor';
 
 interface SecondBrainViewProps {
   notes: VoiceNote[];
   documents: ScanDocument[];
   voiceLanguage: string;
+  awarenessBellEnabled?: boolean;
+  morningDigestEnabled?: boolean;
+  onToggleAwarenessBell?: (v: boolean) => void;
+  onToggleMorningDigest?: (v: boolean) => void;
   onChangeVoiceLanguage: (code: string) => void;
   onAddNote: (note: VoiceNote) => void;
   onUpdateNote: (updated: VoiceNote) => void;
@@ -58,10 +70,21 @@ interface SpeechRecognitionLike {
   stop: () => void;
 }
 
+function toLocalDateTimeInputValue(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`;
+}
+
 export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
   notes,
   documents,
   voiceLanguage,
+  awarenessBellEnabled = false,
+  morningDigestEnabled = false,
+  onToggleAwarenessBell,
+  onToggleMorningDigest,
   onChangeVoiceLanguage,
   onAddNote,
   onUpdateNote,
@@ -72,12 +95,15 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
   const [activeTab, setActiveTab] = useState<TemporalClass>('today');
   const [draftText, setDraftText] = useState<string>('');
   const [recurrence, setRecurrence] = useState<RecurrenceRule>('none');
+  const [customScheduleInput, setCustomScheduleInput] = useState<string>('');
+  const [draftImages, setDraftImages] = useState<string[]>([]);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [linkingNoteId, setLinkingNoteId] = useState<string | null>(null);
   const [addingStepNoteId, setAddingStepNoteId] = useState<string | null>(null);
   const [newStepText, setNewStepText] = useState<string>('');
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   const counts = useMemo(
     () => ({
@@ -155,26 +181,126 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
     }
   };
 
+  const applySchedulePreset = (preset: '1h' | 'today6pm' | 'tomorrow9am' | 'nextweek') => {
+    const now = new Date();
+    const d = new Date(now);
+    if (preset === '1h') {
+      d.setHours(d.getHours() + 1);
+    } else if (preset === 'today6pm') {
+      d.setHours(18, 0, 0, 0);
+      if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+    } else if (preset === 'tomorrow9am') {
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+    } else {
+      d.setDate(d.getDate() + 7);
+      d.setHours(9, 0, 0, 0);
+    }
+    setCustomScheduleInput(toLocalDateTimeInputValue(d));
+  };
+
+  const handleAttachPhotos = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    Array.from(files)
+      .slice(0, 4)
+      .forEach((f) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setDraftImages((prev) => [...prev.slice(0, 3), String(reader.result)]);
+        };
+        reader.readAsDataURL(f);
+      });
+    e.target.value = '';
+  };
+
   const handleSaveNote = () => {
     const clean = draftText.trim();
     if (!clean) return;
-    const parsed = classifyVoiceTranscript(clean);
+    const parsed = extractTemporalInfo(clean);
+
+    let finalClass = parsed.temporalClass;
+    let finalScheduledIso = parsed.scheduledDateIso;
+
+    if (customScheduleInput) {
+      const customDate = new Date(customScheduleInput);
+      if (!Number.isNaN(customDate.getTime())) {
+        finalScheduledIso = customDate.toISOString();
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const targetStart = new Date(customDate);
+        targetStart.setHours(0, 0, 0, 0);
+        const diff = targetStart.getTime() - todayStart.getTime();
+        finalClass = diff > 0 ? 'upcoming' : diff < 0 ? 'history' : 'today';
+      }
+    }
+
+    const checklist = (parsed.checklistSteps.length > 0 ? parsed.checklistSteps : [clean]).map(
+      (text, idx) => ({
+        id: `step-${Date.now()}-${idx}`,
+        text,
+        done: false,
+      })
+    );
+
     const note: VoiceNote = {
       id: `vn-${Date.now()}`,
-      title: parsed.title,
+      title: parsed.suggestedTitle,
       transcript: clean,
-      temporalClass: parsed.temporalClass,
-      scheduledDate: parsed.scheduledDate,
+      temporalClass: finalClass,
+      scheduledDate: finalScheduledIso,
       recurrence,
-      checklist: parsed.checklist,
+      checklist,
+      imageDataUrls: draftImages.length > 0 ? draftImages : undefined,
       languageCode: voiceLanguage,
       createdAt: new Date().toISOString(),
     };
     onAddNote(note);
     setDraftText('');
     setRecurrence('none');
-    setActiveTab(parsed.temporalClass);
-    onToast(`Filed under ${parsed.temporalClass} with ${parsed.checklist.length} action step(s)`);
+    setCustomScheduleInput('');
+    setDraftImages([]);
+    setActiveTab(finalClass);
+    onToast(`Filed under ${finalClass} with ${checklist.length} action step(s)`);
+  };
+
+  const handleMarkDone = (note: VoiceNote) => {
+    if (note.recurrence !== 'none') {
+      const nextIso = computeNextOccurrenceIso(note.scheduledDate, note.recurrence);
+      if (nextIso) {
+        onUpdateNote({
+          ...note,
+          scheduledDate: nextIso,
+          temporalClass: 'upcoming',
+          checklist: note.checklist.map((c) => ({ ...c, done: false })),
+        });
+        onToast(`Advanced ${note.recurrence} reminder to ${formatShortDate(nextIso)}`);
+        return;
+      }
+    }
+    onUpdateNote({
+      ...note,
+      isDone: true,
+      temporalClass: 'history',
+      checklist: note.checklist.map((c) => ({ ...c, done: true })),
+    });
+    onToast('Marked done & moved to History');
+  };
+
+  const handleSnooze = (note: VoiceNote, mode: '15m' | 'tomorrow9am') => {
+    const next = new Date();
+    if (mode === '15m') {
+      next.setMinutes(next.getMinutes() + 15);
+    } else {
+      next.setDate(next.getDate() + 1);
+      next.setHours(9, 0, 0, 0);
+    }
+    onUpdateNote({
+      ...note,
+      scheduledDate: next.toISOString(),
+      temporalClass: mode === 'tomorrow9am' ? 'upcoming' : 'today',
+    });
+    onToast(mode === '15m' ? 'Snoozed for 15 minutes' : 'Snoozed until tomorrow 9:00 AM');
   };
 
   const toggleChecklist = (note: VoiceNote, itemId: string) => {
@@ -197,25 +323,71 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white truncate">
           Second Brain
         </h1>
 
-        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 rounded-lg px-2.5 h-8 shrink-0">
-          <Globe className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-          <select
-            value={voiceLanguage}
-            onChange={(e) => onChangeVoiceLanguage(e.target.value)}
-            className="bg-transparent focus:outline-none text-[11px] font-semibold"
-          >
-            {VOICE_LANGUAGES.map((lang) => (
-              <option key={lang.code} value={lang.code} className="text-slate-900">
-                {lang.name} ({lang.nativeName})
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {onToggleAwarenessBell && (
+            <button
+              type="button"
+              onClick={() => {
+                onToggleAwarenessBell(!awarenessBellEnabled);
+                onToast(
+                  !awarenessBellEnabled
+                    ? 'Awareness Bell enabled (hourly focus check-in)'
+                    : 'Awareness Bell paused'
+                );
+              }}
+              className={`h-8 px-2.5 rounded-lg text-[11px] font-semibold border flex items-center gap-1 transition-colors ${
+                awarenessBellEnabled
+                  ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300'
+                  : 'bg-white dark:bg-[#1C1C1E] border-slate-200/80 dark:border-white/10 text-slate-500'
+              }`}
+              title="Hourly Awareness Bell"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Bell</span>
+            </button>
+          )}
+          {onToggleMorningDigest && (
+            <button
+              type="button"
+              onClick={() => {
+                onToggleMorningDigest(!morningDigestEnabled);
+                onToast(
+                  !morningDigestEnabled
+                    ? 'Morning Daily Digest (8:00 AM) enabled'
+                    : 'Morning Daily Digest disabled'
+                );
+              }}
+              className={`h-8 px-2.5 rounded-lg text-[11px] font-semibold border flex items-center gap-1 transition-colors ${
+                morningDigestEnabled
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-white dark:bg-[#1C1C1E] border-slate-200/80 dark:border-white/10 text-slate-500'
+              }`}
+              title="Morning Daily Digest at 8:00 AM"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">8 AM Digest</span>
+            </button>
+          )}
+          <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 rounded-lg px-2.5 h-8 shrink-0">
+            <Globe className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+            <select
+              value={voiceLanguage}
+              onChange={(e) => onChangeVoiceLanguage(e.target.value)}
+              className="bg-transparent focus:outline-none text-[11px] font-semibold"
+            >
+              {VOICE_LANGUAGES.map((lang) => (
+                <option key={lang.code} value={lang.code} className="text-slate-900">
+                  {lang.name} ({lang.nativeName})
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
 
       {/* Voice + Quick Text Composer */}
@@ -237,9 +409,69 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
             rows={2}
             value={draftText}
             onChange={(e) => setDraftText(e.target.value)}
-            placeholder='Speak or type: "Remind me tomorrow to submit the signed contract and send the invoice PDF…"'
+            placeholder='Speak or type (English / Hinglish / Hindi): "Kal shaam 6 baje bijli bill bharna hai aur receipt scan karni hai…"'
             className="flex-1 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
           />
+        </div>
+
+        {/* Attached Photos Preview */}
+        {draftImages.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto py-1">
+            {draftImages.map((src, idx) => (
+              <div key={idx} className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 dark:border-white/10 shrink-0">
+                <img src={src} alt="Attachment" className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => setDraftImages((prev) => prev.filter((_, i) => i !== idx))}
+                  className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center"
+                >
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Schedule Date/Time Presets + Picker */}
+        <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+          <span className="text-slate-500 flex items-center gap-1 mr-0.5">
+            <Calendar className="w-3.5 h-3.5" />
+            <span>Schedule:</span>
+          </span>
+          {(
+            [
+              { id: '1h', label: 'In 1 hr' },
+              { id: 'today6pm', label: 'Today 6 PM' },
+              { id: 'tomorrow9am', label: 'Tomorrow 9 AM' },
+              { id: 'nextweek', label: 'Next Week' },
+            ] as const
+          ).map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => applySchedulePreset(p.id)}
+              className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 text-slate-600 dark:text-slate-300 font-medium"
+            >
+              {p.label}
+            </button>
+          ))}
+          <input
+            type="datetime-local"
+            value={customScheduleInput}
+            onChange={(e) => setCustomScheduleInput(e.target.value)}
+            aria-label="Custom schedule date and time"
+            className="px-2 py-1 rounded-lg bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-[11px]"
+          />
+          {customScheduleInput && (
+            <button
+              type="button"
+              onClick={() => setCustomScheduleInput('')}
+              className="text-slate-400 hover:text-slate-600"
+              title="Clear custom date (auto-detect from text)"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -248,7 +480,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
               <Repeat className="w-3.5 h-3.5" />
               <span>Repeat:</span>
             </span>
-            {(['none', 'daily', 'weekly', 'monthly'] as const).map((r) => (
+            {(['none', 'daily', 'weekly', 'monthly', 'yearly'] as const).map((r) => (
               <button
                 key={r}
                 type="button"
@@ -264,15 +496,34 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
             ))}
           </div>
 
-          <button
-            type="button"
-            disabled={!draftText.trim()}
-            onClick={handleSaveNote}
-            className="min-h-[40px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors"
-          >
-            <Send className="w-3.5 h-3.5" />
-            <span>Capture Note</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={handleAttachPhotos}
+            />
+            <button
+              type="button"
+              onClick={() => photoInputRef.current?.click()}
+              className="min-h-[38px] px-3 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-xs font-semibold flex items-center gap-1.5"
+              title="Attach photo to note"
+            >
+              <ImagePlus className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+              <span className="hidden sm:inline">Photo</span>
+            </button>
+            <button
+              type="button"
+              disabled={!draftText.trim()}
+              onClick={handleSaveNote}
+              className="min-h-[38px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>Capture Note</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -315,7 +566,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
         <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-10 text-center space-y-1.5">
           <h3 className="text-sm font-bold">Your Second Brain is clear here</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Capture a voice memo or reminder above — words like &ldquo;tomorrow&rdquo; or &ldquo;next week&rdquo; automatically file under Upcoming.
+            Capture a voice memo or reminder above — words like &ldquo;tomorrow&rdquo;, &ldquo;kal&rdquo;, or &ldquo;next week&rdquo; automatically file under Upcoming.
           </p>
         </div>
       ) : (
@@ -323,6 +574,8 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
           {visibleNotes.map((note) => {
             const linkedDoc = note.linkedDocId ? docMap[note.linkedDocId] : undefined;
             const completedCount = note.checklist.filter((c) => c.done).length;
+            const totalSteps = Math.max(1, note.checklist.length);
+            const pct = Math.round((completedCount / totalSteps) * 100);
             return (
               <article
                 key={note.id}
@@ -343,7 +596,9 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                       {note.recurrence !== 'none' && (
                         <>
                           <span aria-hidden="true">·</span>
-                          <span className="capitalize">{note.recurrence}</span>
+                          <span className="capitalize text-orange-600 dark:text-orange-400 font-semibold">
+                            {note.recurrence}
+                          </span>
                         </>
                       )}
                       <span aria-hidden="true">·</span>
@@ -354,10 +609,26 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
+                    {note.temporalClass !== 'history' && (
+                      <button
+                        type="button"
+                        onClick={() => handleMarkDone(note)}
+                        title={
+                          note.recurrence !== 'none'
+                            ? `Complete & advance ${note.recurrence}`
+                            : 'Mark Done & Archive'
+                        }
+                        className="w-8 h-8 rounded-lg flex items-center justify-center text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={async () => {
-                        await navigator.clipboard.writeText(`${note.title}\n${note.transcript}`).catch(() => {});
+                        await navigator.clipboard
+                          .writeText(`${note.title}\n${note.transcript}`)
+                          .catch(() => {});
                         onToast('Copied voice note');
                       }}
                       title="Copy transcript"
@@ -376,9 +647,33 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                   </div>
                 </div>
 
+                {/* Checklist Progress Bar */}
+                {note.checklist.length > 0 && (
+                  <div className="h-1.5 rounded-full bg-slate-100 dark:bg-[#2C2C2E] overflow-hidden">
+                    <div
+                      className="h-full bg-orange-500 transition-all duration-300"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                )}
+
                 <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                   {note.transcript}
                 </p>
+
+                {/* Attached Photos */}
+                {note.imageDataUrls && note.imageDataUrls.length > 0 && (
+                  <div className="flex items-center gap-2 overflow-x-auto">
+                    {note.imageDataUrls.map((src, i) => (
+                      <img
+                        key={i}
+                        src={src}
+                        alt="Note attachment"
+                        className="w-16 h-16 rounded-xl object-cover border border-slate-200 dark:border-white/10 shrink-0"
+                      />
+                    ))}
+                  </div>
+                )}
 
                 {/* Action Checklist */}
                 <div className="space-y-1.5 pt-1">
@@ -416,11 +711,9 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                         type="text"
                         value={newStepText}
                         onChange={(e) => setNewStepText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') addChecklistStep(note);
-                        }}
-                        placeholder="Add action step…"
-                        className="flex-1 h-9 px-3 rounded-lg bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500"
+                        onKeyDown={(e) => e.key === 'Enter' && addChecklistStep(note)}
+                        placeholder="New action step…"
+                        className="flex-1 h-9 px-3 rounded-lg bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs"
                         autoFocus
                       />
                       <button
@@ -436,7 +729,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                           setAddingStepNoteId(null);
                           setNewStepText('');
                         }}
-                        className="w-8 h-8 flex items-center justify-center text-slate-400"
+                        className="h-9 px-2 text-slate-400"
                       >
                         <X className="w-4 h-4" />
                       </button>
@@ -453,29 +746,48 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                   )}
                 </div>
 
-                {/* Linked Document Row */}
-                <div className="pt-2.5 mt-auto border-t border-slate-100 dark:border-white/8 flex items-center justify-between gap-2">
+                {/* Linked Document + Snooze Footer */}
+                <div className="pt-2 border-t border-slate-100 dark:border-white/5 flex items-center justify-between gap-2 flex-wrap">
                   {linkedDoc ? (
                     <button
                       type="button"
                       onClick={() => onOpenDocument(linkedDoc.id)}
-                      className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:text-orange-600 truncate"
+                      className="px-3 py-1.5 rounded-xl bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 text-xs font-semibold flex items-center gap-1.5 hover:bg-orange-100 transition-colors"
                     >
-                      <FileText className="w-3.5 h-3.5 text-orange-600 shrink-0" />
-                      <span className="truncate">{linkedDoc.title}</span>
+                      <FileText className="w-3.5 h-3.5" />
+                      <span className="truncate max-w-[180px]">{linkedDoc.title}</span>
                     </button>
                   ) : (
-                    <span className="text-xs text-slate-400">No linked document</span>
+                    <span className="text-xs text-slate-400">No linked scan</span>
                   )}
-
-                  <button
-                    type="button"
-                    onClick={() => setLinkingNoteId(note.id)}
-                    className="text-xs font-semibold text-slate-500 hover:text-orange-600 flex items-center gap-1 shrink-0"
-                  >
-                    <Link2 className="w-3.5 h-3.5" />
-                    <span>{linkedDoc ? 'Change' : 'Link PDF'}</span>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {note.temporalClass !== 'history' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleSnooze(note, '15m')}
+                          className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 text-[11px] font-medium"
+                        >
+                          +15m
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSnooze(note, 'tomorrow9am')}
+                          className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 text-[11px] font-medium"
+                        >
+                          Tmrw
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setLinkingNoteId(note.id)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 text-[11px] font-semibold flex items-center gap-1"
+                    >
+                      <Link2 className="w-3 h-3" />
+                      <span>{linkedDoc ? 'Change' : 'Link PDF'}</span>
+                    </button>
+                  </div>
                 </div>
               </article>
             );
@@ -490,46 +802,42 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
           onClick={() => setLinkingNoteId(null)}
         >
           <div
-            className="w-full sm:max-w-md bg-white dark:bg-[#1C1C1E] rounded-t-3xl sm:rounded-3xl p-5 pb-safe space-y-3 max-h-[75vh] flex flex-col"
+            className="w-full sm:max-w-md bg-white dark:bg-[#1C1C1E] rounded-t-3xl sm:rounded-3xl p-5 pb-safe space-y-3 max-h-[80vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold">Link Indexed Document</h3>
+              <h3 className="text-base font-bold">Link Scanned Document</h3>
               <button
-                type="button"
                 onClick={() => setLinkingNoteId(null)}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10"
+                className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/10"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="overflow-y-auto space-y-1.5">
-              {documents.length === 0 ? (
-                <p className="text-xs text-slate-500 dark:text-slate-400 py-4 text-center">
-                  No indexed files yet. Index device files or scan a document first.
-                </p>
-              ) : (
-                documents.map((doc) => (
-                  <button
-                    key={doc.id}
-                    type="button"
-                    onClick={() => {
-                      const target = notes.find((n) => n.id === linkingNoteId);
-                      if (target) {
-                        onUpdateNote({ ...target, linkedDocId: doc.id });
-                        onToast(`Linked "${doc.title}"`);
-                      }
-                      setLinkingNoteId(null);
-                    }}
-                    className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/30 flex items-center justify-between gap-2 text-left"
-                  >
-                    <span className="text-sm font-semibold truncate">{doc.title}</span>
-                    <span className="text-xs font-mono text-slate-500 shrink-0">
-                      {doc.pages.length}p
-                    </span>
-                  </button>
-                ))
-              )}
+            <div className="overflow-y-auto space-y-2">
+              {documents.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => {
+                    const target = notes.find((n) => n.id === linkingNoteId);
+                    if (target) {
+                      onUpdateNote({ ...target, linkedDocId: d.id });
+                      onToast(`Linked "${d.title}" to note`);
+                    }
+                    setLinkingNoteId(null);
+                  }}
+                  className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/30 flex items-center justify-between gap-3 text-left"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold truncate">{d.title}</div>
+                    <div className="text-xs text-slate-500">
+                      {d.pages.length} page(s) · {formatShortDate(d.updatedAt)}
+                    </div>
+                  </div>
+                  <Link2 className="w-4 h-4 text-orange-600 shrink-0" />
+                </button>
+              ))}
             </div>
           </div>
         </div>

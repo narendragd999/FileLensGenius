@@ -23,14 +23,21 @@ import {
   IndexProgress,
   IndexStats,
   PdfCompressPreset,
+  PhotoCompressPreset,
   SavedSearch,
   SavedSignature,
   ScanDocument,
   ScanMode,
   SearchMode,
   SmartCardCategory,
+  SmartToastItem,
   VoiceNote,
 } from './types/filelens';
+import {
+  compressDocumentPagesReal,
+  compressPhotoReal,
+} from './utils/pdfExport';
+import { classifyToastType, SmartToastHost } from './components/SmartToast';
 import {
   DEFAULT_PREFERENCES,
   INITIAL_FOLDERS,
@@ -47,6 +54,8 @@ import {
   runSmartIndexingPipeline,
 } from './utils/smartIndexer';
 import {
+  AndroidNativeFileMeta,
+  cancelAndroidNativeDeviceIndex,
   clearAllStoredDeviceRoots,
   DEFAULT_DEVICE_INDEX_FILTERS,
   detectDeviceRuntime,
@@ -54,6 +63,7 @@ import {
   getAndroidAllFilesPermissionStatus,
   getStoredDeviceRootHandle,
   listStoredDeviceRoots,
+  materializeAndroidNativeFile,
   pickAndLinkDeviceRoot,
   requestAndroidAllFilesAccess,
   triggerAndroidNativeDeviceIndex,
@@ -76,7 +86,7 @@ import {
 
 export default function App() {
   const emptyInitial = useMemo(() => createEmptyVaultState(), []);
-  const runtime = useMemo(() => detectDeviceRuntime(), []);
+  const runtime = detectDeviceRuntime();
   const [documents, setDocuments] = useState<ScanDocument[]>(emptyInitial.documents);
   const [folders, setFolders] = useState<DocFolder[]>(emptyInitial.folders);
   const [voiceNotes, setVoiceNotes] = useState<VoiceNote[]>(emptyInitial.voiceNotes);
@@ -107,7 +117,7 @@ export default function App() {
   }>({ open: false, mode: 'batch' });
   const [viewerState, setViewerState] = useState<{ docId: string; pageIndex: number } | null>(null);
   const [organizerDocId, setOrganizerDocId] = useState<string | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [smartToast, setSmartToast] = useState<SmartToastItem | null>(null);
 
   // Hydrate persistent vault from IndexedDB (supports large real indexed files)
   useEffect(() => {
@@ -167,15 +177,19 @@ export default function App() {
     lastIndexSummary,
   ]);
 
-  const showToast = (message: string) => {
-    setToastMsg(message);
+  const showToast = (
+    message: string,
+    undo?: { label?: string; action: () => void }
+  ) => {
+    setSmartToast({
+      id: `toast-${Date.now()}`,
+      message,
+      type: classifyToastType(message),
+      undoLabel: undo?.label,
+      onUndo: undo?.action,
+      durationMs: undo ? 3800 : 2800,
+    });
   };
-
-  useEffect(() => {
-    if (!toastMsg) return;
-    const t = window.setTimeout(() => setToastMsg(null), 3000);
-    return () => window.clearTimeout(t);
-  }, [toastMsg]);
 
   const indexStats: IndexStats = useMemo(() => {
     const ocrDone = documents.filter(
@@ -193,6 +207,22 @@ export default function App() {
       cardsCount: documents.filter((d) => d.isSmartCard).length,
     };
   }, [documents]);
+
+  const documentsRef = useRef<ScanDocument[]>(documents);
+  documentsRef.current = documents;
+  const androidBatchQueueRef = useRef<
+    { items?: AndroidNativeFileMeta[]; files?: File[]; sourceLabel: string; totalFound?: number; sentCount?: number }[]
+  >([]);
+  const isDrainingAndroidQueueRef = useRef<boolean>(false);
+  const androidCrawlDoneRef = useRef<boolean>(true);
+  const androidStatsRef = useRef({
+    newOrUpdated: 0,
+    skippedUnchanged: 0,
+    totalScanned: 0,
+    foldersScanned: 0,
+    startMs: 0,
+    sourceLabel: 'Device & SD Card',
+  });
 
   const handleIndexFiles = async (
     files: File[],
@@ -216,8 +246,9 @@ export default function App() {
     try {
       const result = await runSmartIndexingPipeline({
         files,
-        existingDocuments: documents,
+        existingDocuments: documentsRef.current,
         defaultFilter: preferences.defaultFilter,
+        ocrLanguage: preferences.ocrLanguage ?? 'eng+hin',
         sourceLabel,
         filePathMap,
         filters,
@@ -252,22 +283,182 @@ export default function App() {
     }
   };
 
-  // Support native Android APK WebView bridge pushing crawled storage files directly
-  const handleIndexFilesRef = useRef(handleIndexFiles);
-  handleIndexFilesRef.current = handleIndexFiles;
+  // Sequential queue for native Android APK full-device + SD card crawl batches
   useEffect(() => {
-    const onAndroidFiles = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ files?: File[]; sourceLabel?: string }>).detail;
-      if (detail?.files && detail.files.length > 0) {
-        void handleIndexFilesRef.current(
-          detail.files,
-          detail.sourceLabel || 'Android Device Storage'
-        );
+    const finishIfReady = () => {
+      if (
+        androidCrawlDoneRef.current &&
+        !isDrainingAndroidQueueRef.current &&
+        androidBatchQueueRef.current.length === 0
+      ) {
+        const st = androidStatsRef.current;
+        setIsIndexing(false);
+        setIndexProgress(null);
+        indexAbortRef.current = null;
+        if (st.totalScanned > 0 || st.newOrUpdated > 0) {
+          setLastIndexSummary({
+            newOrUpdated: st.newOrUpdated,
+            skippedUnchanged: st.skippedUnchanged,
+            totalScanned: st.totalScanned,
+            elapsedMs: Math.round(performance.now() - st.startMs),
+            timestampIso: new Date().toISOString(),
+            sourceLabel: st.sourceLabel,
+          });
+          showToast(
+            `Device & SD Card indexed: ${st.newOrUpdated} new/updated · ${st.skippedUnchanged} unchanged`
+          );
+        } else {
+          showToast('Device & SD Card scan complete · 0 matching files found');
+        }
       }
     };
+
+    const drainQueue = async () => {
+      if (isDrainingAndroidQueueRef.current) return;
+      isDrainingAndroidQueueRef.current = true;
+      setIsIndexing(true);
+      const controller = new AbortController();
+      indexAbortRef.current = controller;
+
+      try {
+        while (androidBatchQueueRef.current.length > 0 && !controller.signal.aborted) {
+          const item = androidBatchQueueRef.current.shift()!;
+          const batchFiles = item.items
+            ? item.items.map((m) => materializeAndroidNativeFile(m))
+            : item.files || [];
+          if (batchFiles.length === 0) continue;
+
+          const result = await runSmartIndexingPipeline({
+            files: batchFiles,
+            existingDocuments: documentsRef.current,
+            defaultFilter: preferences.defaultFilter,
+            ocrLanguage: preferences.ocrLanguage ?? 'eng+hin',
+            sourceLabel: item.sourceLabel,
+            signal: controller.signal,
+            onProgress: (prog) => {
+              const st = androidStatsRef.current;
+              setIndexProgress({
+                ...prog,
+                indexed: st.totalScanned + prog.indexed,
+                total: Math.max(item.totalFound ?? st.totalScanned + prog.total, st.totalScanned + prog.total),
+                newOrUpdated: st.newOrUpdated + prog.newOrUpdated,
+                skippedUnchanged: st.skippedUnchanged + prog.skippedUnchanged,
+                foldersScanned: st.foldersScanned,
+              });
+            },
+          });
+
+          if (result.newDocuments.length > 0 || result.updatedDocuments.length > 0) {
+            setDocuments((prev) => {
+              const updatedMap = new Map(result.updatedDocuments.map((d) => [d.id, d]));
+              const merged = prev.map((d) => updatedMap.get(d.id) ?? d);
+              const next = [...result.newDocuments, ...merged];
+              documentsRef.current = next;
+              return next;
+            });
+          }
+
+          androidStatsRef.current.newOrUpdated += result.summary.newOrUpdated;
+          androidStatsRef.current.skippedUnchanged += result.summary.skippedUnchanged;
+          androidStatsRef.current.totalScanned += result.summary.totalScanned;
+          androidStatsRef.current.sourceLabel = item.sourceLabel;
+        }
+      } finally {
+        isDrainingAndroidQueueRef.current = false;
+        finishIfReady();
+      }
+    };
+
+    const onAndroidProgress = (ev: Event) => {
+      const d = (ev as CustomEvent<{ found?: number; folders?: number; currentFolder?: string }>).detail;
+      if (!d) return;
+      androidStatsRef.current.foldersScanned = d.folders ?? androidStatsRef.current.foldersScanned;
+      if (!isDrainingAndroidQueueRef.current) {
+        setIsIndexing(true);
+        setIndexProgress({
+          indexed: 0,
+          total: d.found ?? 0,
+          currentFile: d.currentFolder || 'Scanning Device & SD Card…',
+          phase: 'Discovering Device Folders',
+          skippedUnchanged: 0,
+          newOrUpdated: 0,
+          foldersScanned: d.folders ?? 0,
+        });
+      }
+    };
+
+    const onAndroidFilesMeta = (ev: Event) => {
+      const detail = (
+        ev as CustomEvent<{
+          items?: AndroidNativeFileMeta[];
+          sourceLabel?: string;
+          totalFound?: number;
+          sentCount?: number;
+        }>
+      ).detail;
+      if (detail?.items && detail.items.length > 0) {
+        androidBatchQueueRef.current.push({
+          items: detail.items,
+          sourceLabel: detail.sourceLabel || 'Internal & SD Card Storage',
+          totalFound: detail.totalFound,
+          sentCount: detail.sentCount,
+        });
+        void drainQueue();
+      }
+    };
+
+    const onAndroidFiles = (ev: Event) => {
+      const detail = (
+        ev as CustomEvent<{
+          files?: File[];
+          sourceLabel?: string;
+          totalFound?: number;
+          sentCount?: number;
+        }>
+      ).detail;
+      if (detail?.files && detail.files.length > 0) {
+        androidBatchQueueRef.current.push({
+          files: detail.files,
+          sourceLabel: detail.sourceLabel || 'Internal & SD Card Storage',
+          totalFound: detail.totalFound,
+          sentCount: detail.sentCount,
+        });
+        void drainQueue();
+      }
+    };
+
+    const onAndroidReady = () => {
+      setHasAllFilesPermission(getAndroidAllFilesPermissionStatus() === 'granted');
+    };
+
+    const onAndroidComplete = (ev: Event) => {
+      const d = (
+        ev as CustomEvent<{
+          sourceLabel?: string;
+          totalFound?: number;
+          foldersScanned?: number;
+          cancelled?: boolean;
+        }>
+      ).detail;
+      androidCrawlDoneRef.current = true;
+      if (d?.sourceLabel) androidStatsRef.current.sourceLabel = d.sourceLabel;
+      if (d?.foldersScanned) androidStatsRef.current.foldersScanned = d.foldersScanned;
+      finishIfReady();
+    };
+
+    window.addEventListener('filelens-android-ready', onAndroidReady);
+    window.addEventListener('filelens-android-progress', onAndroidProgress);
+    window.addEventListener('filelens-android-files-meta', onAndroidFilesMeta);
     window.addEventListener('filelens-android-files', onAndroidFiles);
-    return () => window.removeEventListener('filelens-android-files', onAndroidFiles);
-  }, []);
+    window.addEventListener('filelens-android-complete', onAndroidComplete);
+    return () => {
+      window.removeEventListener('filelens-android-ready', onAndroidReady);
+      window.removeEventListener('filelens-android-progress', onAndroidProgress);
+      window.removeEventListener('filelens-android-files-meta', onAndroidFilesMeta);
+      window.removeEventListener('filelens-android-files', onAndroidFiles);
+      window.removeEventListener('filelens-android-complete', onAndroidComplete);
+    };
+  }, [preferences.defaultFilter, preferences.ocrLanguage]);
 
   const runWalkAndIndexRoots = async (
     entries: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[],
@@ -371,8 +562,19 @@ export default function App() {
       setHasAllFilesPermission(granted);
       if (granted && pendingAutoIndexAfterGrantRef.current) {
         pendingAutoIndexAfterGrantRef.current = false;
+        androidCrawlDoneRef.current = false;
+        androidBatchQueueRef.current = [];
+        androidStatsRef.current = {
+          newOrUpdated: 0,
+          skippedUnchanged: 0,
+          totalScanned: 0,
+          foldersScanned: 0,
+          startMs: performance.now(),
+          sourceLabel: 'Device & SD Card',
+        };
+        setIsIndexing(true);
         triggerAndroidNativeDeviceIndex(DEFAULT_DEVICE_INDEX_FILTERS);
-        showToast('All Files Access granted · Indexing & OCRing device…');
+        showToast('All Files Access granted · Indexing & OCRing device & SD card…');
       }
     };
     window.addEventListener('focus', onResumeCheck);
@@ -420,8 +622,27 @@ export default function App() {
       const granted = getAndroidAllFilesPermissionStatus() === 'granted';
       setHasAllFilesPermission(granted);
       if (granted) {
+        androidCrawlDoneRef.current = false;
+        androidBatchQueueRef.current = [];
+        androidStatsRef.current = {
+          newOrUpdated: 0,
+          skippedUnchanged: 0,
+          totalScanned: 0,
+          foldersScanned: 0,
+          startMs: performance.now(),
+          sourceLabel: 'Device & SD Card',
+        };
+        setIsIndexing(true);
+        setIndexProgress({
+          indexed: 0,
+          total: 0,
+          currentFile: 'Scanning Internal Storage & SD Card…',
+          phase: 'Discovering Device Folders',
+          skippedUnchanged: 0,
+          newOrUpdated: 0,
+        });
         triggerAndroidNativeDeviceIndex(DEFAULT_DEVICE_INDEX_FILTERS);
-        showToast('Scanning & OCRing entire device…');
+        showToast('Scanning & OCRing entire device & SD card…');
       } else {
         pendingAutoIndexAfterGrantRef.current = true;
         requestAndroidAllFilesAccess();
@@ -475,6 +696,9 @@ export default function App() {
 
   const handleCancelIndexing = () => {
     indexAbortRef.current?.abort();
+    androidBatchQueueRef.current = [];
+    androidCrawlDoneRef.current = true;
+    cancelAndroidNativeDeviceIndex();
   };
 
   const activeViewerDoc = useMemo(
@@ -521,19 +745,45 @@ export default function App() {
     showToast(`Merged ${targets.length} PDFs (${mergedPages.length} pages)`);
   };
 
-  const handleBatchCompressPdfs = (preset: PdfCompressPreset) => {
-    const ratio = preset === 'email_small' ? 0.34 : preset === 'balanced' ? 0.54 : 0.78;
-    const qualityPreset =
-      preset === 'email_small' ? 'compact' : preset === 'balanced' ? 'balanced' : 'high';
+  const handleBatchCompressPdfs = async (preset: PdfCompressPreset) => {
     let savedBytes = 0;
-    setDocuments((prev) =>
-      prev.map((d) => {
-        const nextSize = Math.max(95_000, Math.round(d.sizeBytes * ratio));
-        savedBytes += Math.max(0, d.sizeBytes - nextSize);
-        return { ...d, sizeBytes: nextSize, qualityPreset, updatedAt: new Date().toISOString() };
-      })
-    );
-    return { savedBytes, count: documents.length };
+    let count = 0;
+    const nextDocs: ScanDocument[] = [];
+    for (const d of documents) {
+      const res = await compressDocumentPagesReal(d, preset);
+      nextDocs.push(res.updatedDoc);
+      if (res.didCompress) {
+        savedBytes += res.savedBytes;
+        count++;
+      }
+    }
+    setDocuments(nextDocs);
+    return { savedBytes, count };
+  };
+
+  const handleBatchCompressPhotos = async (preset: PhotoCompressPreset) => {
+    let savedBytes = 0;
+    let count = 0;
+    const nextDocs: ScanDocument[] = [];
+    for (const d of documents) {
+      if (d.pages.length === 1 && (d.fileCategory === 'image' || d.pages[0]?.imageUrl.startsWith('data:image/'))) {
+        const res = await compressPhotoReal(d.pages[0].imageUrl, preset, d.sizeBytes);
+        if (res.didCompress) {
+          savedBytes += Math.max(0, d.sizeBytes - res.newBytes);
+          count++;
+          nextDocs.push({
+            ...d,
+            sizeBytes: res.newBytes,
+            pages: [{ ...d.pages[0], imageUrl: res.dataUrl }],
+            updatedAt: new Date().toISOString(),
+          });
+          continue;
+        }
+      }
+      nextDocs.push(d);
+    }
+    setDocuments(nextDocs);
+    return { savedBytes, count };
   };
 
   const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
@@ -832,6 +1082,14 @@ export default function App() {
                 notes={voiceNotes}
                 documents={documents}
                 voiceLanguage={preferences.voiceLanguage}
+                awarenessBellEnabled={Boolean(preferences.awarenessBellEnabled)}
+                morningDigestEnabled={Boolean(preferences.morningDigestEnabled)}
+                onToggleAwarenessBell={(v) =>
+                  setPreferences((p) => ({ ...p, awarenessBellEnabled: v }))
+                }
+                onToggleMorningDigest={(v) =>
+                  setPreferences((p) => ({ ...p, morningDigestEnabled: v }))
+                }
                 onChangeVoiceLanguage={(code) =>
                   setPreferences((p) => ({ ...p, voiceLanguage: code }))
                 }
@@ -840,8 +1098,17 @@ export default function App() {
                   setVoiceNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)))
                 }
                 onDeleteNote={(id) => {
+                  const deleted = voiceNotes.find((n) => n.id === id);
                   setVoiceNotes((prev) => prev.filter((n) => n.id !== id));
-                  showToast('Deleted voice note');
+                  showToast(
+                    'Deleted voice note',
+                    deleted
+                      ? {
+                          label: 'Undo',
+                          action: () => setVoiceNotes((prev) => [deleted, ...prev]),
+                        }
+                      : undefined
+                  );
                 }}
                 onOpenDocument={(docId) => setViewerState({ docId, pageIndex: 0 })}
                 onToast={showToast}
@@ -852,6 +1119,8 @@ export default function App() {
               <SmartCardsView
                 documents={documents}
                 privacyBlur={preferences.privacyBlurCards}
+                biometricCardsLock={Boolean(preferences.biometricCardsLock)}
+                cardsPinCode={preferences.cardsPinCode ?? ''}
                 onTogglePrivacyBlur={() =>
                   setPreferences((p) => ({ ...p, privacyBlurCards: !p.privacyBlurCards }))
                 }
@@ -872,13 +1141,21 @@ export default function App() {
                     )
                   );
                 }}
-                onScheduleExpiryReminder={(doc, expiryDate) => {
+                onScheduleExpiryReminder={(doc, expiryDate, daysBefore) => {
+                  const exp = new Date(expiryDate);
+                  if (daysBefore && !Number.isNaN(exp.getTime())) {
+                    exp.setDate(exp.getDate() - daysBefore);
+                  }
+                  const scheduledIso = Number.isNaN(exp.getTime())
+                    ? expiryDate
+                    : exp.toISOString();
+                  const label = daysBefore ? ` (${daysBefore}d before)` : '';
                   const reminder: VoiceNote = {
-                    id: `vn-exp-${Date.now()}`,
-                    title: `Renew "${doc.title}" before ${expiryDate}`,
+                    id: `vn-exp-${Date.now()}-${daysBefore ?? 0}`,
+                    title: `Renew "${doc.title}"${label}`,
                     transcript: `Renewal radar alert for ${doc.title} expiring on ${expiryDate}.`,
                     temporalClass: 'upcoming',
-                    scheduledDate: expiryDate,
+                    scheduledDate: scheduledIso,
                     recurrence: 'none',
                     linkedDocId: doc.id,
                     languageCode: preferences.voiceLanguage,
@@ -889,7 +1166,7 @@ export default function App() {
                     ],
                   };
                   setVoiceNotes((prev) => [reminder, ...prev]);
-                  showToast('Scheduled renewal alert in Second Brain');
+                  if (!daysBefore) showToast('Scheduled renewal alert in Second Brain');
                 }}
                 onOpenViewer={(docId) => setViewerState({ docId, pageIndex: 0 })}
                 onOpenOrganizer={(docId) => setOrganizerDocId(docId)}
@@ -913,6 +1190,7 @@ export default function App() {
                 onCancelIndexing={handleCancelIndexing}
                 onUpdatePreferences={setPreferences}
                 onBatchCompressPdfs={handleBatchCompressPdfs}
+                onBatchCompressPhotos={handleBatchCompressPhotos}
                 onDeleteDocument={(docId) => {
                   setDocuments((prev) => prev.filter((d) => d.id !== docId));
                   showToast('Removed duplicate document');
@@ -1135,16 +1413,8 @@ export default function App() {
         }}
       />
 
-      {/* Floating Toast */}
-      {toastMsg && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 z-[60] px-4 py-2.5 rounded-2xl bg-slate-900/95 dark:bg-white/95 text-white dark:text-slate-900 text-xs font-semibold shadow-xl backdrop-blur-md whitespace-nowrap max-w-[90vw] truncate"
-        >
-          {toastMsg}
-        </div>
-      )}
+      {/* Top-Anchored Smart Toast Overlay */}
+      <SmartToastHost toast={smartToast} onDismiss={() => setSmartToast(null)} />
     </div>
   );
 }

@@ -22,7 +22,41 @@ export type SmartCardCategory =
 
 export type TemporalClass = 'today' | 'upcoming' | 'history';
 
-export type RecurrenceRule = 'none' | 'daily' | 'weekly' | 'monthly';
+export type RecurrenceRule = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+export type OcrLanguage = 'eng+hin' | 'eng' | 'hin';
+
+export type PhotoCompressPreset = 'lossless_look' | 'max_quality' | 'ultra_compact';
+
+export type SortColumn = 'score' | 'name' | 'size' | 'modified' | 'extension';
+
+export type SortOrder = 'asc' | 'desc';
+
+export interface SearchFilters {
+  fileCategories?: FileCategory[];
+  minSizeBytes?: number;
+  maxSizeBytes?: number;
+  modifiedAfterIso?: string;
+}
+
+export interface SmartDataSummary {
+  dates: string[];
+  amounts: string[];
+  phones: string[];
+  emails: string[];
+  ids: string[];
+}
+
+export type ToastType = 'success' | 'info' | 'warning' | 'error';
+
+export interface SmartToastItem {
+  id: string;
+  message: string;
+  type: ToastType;
+  undoLabel?: string;
+  onUndo?: () => void;
+  durationMs: number;
+}
 
 export type AppTab = 'documents' | 'search' | 'brain' | 'cards' | 'settings';
 
@@ -213,6 +247,8 @@ export interface VoiceNote {
   recurrence: RecurrenceRule;
   checklist: ChecklistItem[];
   linkedDocId?: string;
+  imageDataUrls?: string[];
+  isDone?: boolean;
   languageCode: string;
   createdAt: string;
 }
@@ -235,6 +271,11 @@ export interface AppPreferences {
   namingTemplate: string;
   voiceLanguage: string;
   privacyBlurCards: boolean;
+  ocrLanguage?: OcrLanguage;
+  awarenessBellEnabled?: boolean;
+  morningDigestEnabled?: boolean;
+  biometricCardsLock?: boolean;
+  cardsPinCode?: string;
 }
 
 export interface ExpiryRadarItem {

@@ -45,9 +45,24 @@ export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = ({
     : undefined;
 
   const customBrightness = page.brightness !== 1 || page.contrast !== 1;
-  const inlineFilter = customBrightness
-    ? `brightness(${page.brightness}) contrast(${page.contrast})`
-    : undefined;
+  const composeFilter = () => {
+    const b = page.brightness ?? 1;
+    const c = page.contrast ?? 1;
+    if (!customBrightness) return undefined;
+    switch (page.filter) {
+      case 'magic':
+        return `contrast(${(1.14 * c).toFixed(2)}) saturate(1.18) brightness(${(1.03 * b).toFixed(2)})`;
+      case 'bw':
+        return `grayscale(1) contrast(${(1.65 * c).toFixed(2)}) brightness(${(1.08 * b).toFixed(2)})`;
+      case 'whiteboard':
+        return `contrast(${(1.38 * c).toFixed(2)}) brightness(${(1.14 * b).toFixed(2)}) saturate(1.28)`;
+      case 'grayscale':
+        return `grayscale(1) contrast(${(1.15 * c).toFixed(2)}) brightness(${(1.02 * b).toFixed(2)})`;
+      default:
+        return `brightness(${b.toFixed(2)}) contrast(${c.toFixed(2)})`;
+    }
+  };
+  const inlineFilter = composeFilter();
 
   return (
     <div

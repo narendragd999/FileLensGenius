@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ArrowUpDown,
   Bookmark,
   BookmarkPlus,
   ChevronLeft,
@@ -7,6 +8,7 @@ import {
   Download,
   Layers,
   Search,
+  SlidersHorizontal,
   Trash2,
   X,
 } from 'lucide-react';
@@ -17,7 +19,10 @@ import {
   IndexStats,
   SavedSearch,
   ScanDocument,
+  SearchFilters,
   SearchMode,
+  SortColumn,
+  SortOrder,
 } from '../types/filelens';
 import { formatBytes, formatShortDate, triggerFileDownload } from '../utils/formatters';
 import { exportSearchResults, runDocumentSearch } from '../utils/searchEngine';
@@ -110,17 +115,43 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
   const [query, setQuery] = useState<string>('');
   const [mode, setMode] = useState<SearchMode>('quick');
   const [fileTypeFilter, setFileTypeFilter] = useState<'all' | FileCategory>('all');
+  const [sizeFilter, setSizeFilter] = useState<'all' | 'lt100k' | '100k_1m' | '1m_10m' | 'gt10m'>('all');
+  const [dateFilter, setDateFilter] = useState<'all' | '7d' | '30d'>('all');
+  const [sortBy, setSortBy] = useState<SortColumn>('score');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
+  const [showFilterPanel, setShowFilterPanel] = useState<boolean>(false);
   const [activeMatchIdx, setActiveMatchIdx] = useState<number>(0);
 
-  const filteredDocuments = useMemo(() => {
-    if (fileTypeFilter === 'all') return documents;
-    return documents.filter((d) => (d.fileCategory ?? 'pdf') === fileTypeFilter);
-  }, [documents, fileTypeFilter]);
+  const searchFilters = useMemo<SearchFilters>(() => {
+    const f: SearchFilters = {};
+    if (fileTypeFilter !== 'all') f.fileCategories = [fileTypeFilter];
+    if (sizeFilter === 'lt100k') f.maxSizeBytes = 100 * 1024;
+    else if (sizeFilter === '100k_1m') {
+      f.minSizeBytes = 100 * 1024;
+      f.maxSizeBytes = 1024 * 1024;
+    } else if (sizeFilter === '1m_10m') {
+      f.minSizeBytes = 1024 * 1024;
+      f.maxSizeBytes = 10 * 1024 * 1024;
+    } else if (sizeFilter === 'gt10m') {
+      f.minSizeBytes = 10 * 1024 * 1024;
+    }
+    if (dateFilter === '7d') {
+      f.modifiedAfterIso = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    } else if (dateFilter === '30d') {
+      f.modifiedAfterIso = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    }
+    return f;
+  }, [fileTypeFilter, sizeFilter, dateFilter]);
 
   const results = useMemo(
-    () => runDocumentSearch(filteredDocuments, query, mode),
-    [filteredDocuments, query, mode]
+    () => runDocumentSearch(documents, query, mode, { filters: searchFilters, sortBy, sortOrder }),
+    [documents, query, mode, searchFilters, sortBy, sortOrder]
   );
+
+  const activeFilterCount =
+    (fileTypeFilter !== 'all' ? 1 : 0) +
+    (sizeFilter !== 'all' ? 1 : 0) +
+    (dateFilter !== 'all' ? 1 : 0);
 
   const safeMatchIdx = results.length > 0 ? Math.min(activeMatchIdx, results.length - 1) : 0;
   const currentModeMeta = SEARCH_MODES.find((m) => m.id === mode)!;
@@ -163,6 +194,23 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           </div>
           <button
             type="button"
+            onClick={() => setShowFilterPanel((v) => !v)}
+            title="Filters & Sort"
+            className={`h-10 px-2.5 rounded-xl flex items-center gap-1 text-xs font-semibold shrink-0 transition-colors ${
+              showFilterPanel || activeFilterCount > 0
+                ? 'bg-orange-100 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400'
+                : 'bg-slate-100 dark:bg-[#2C2C2E] text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-white/15'
+            }`}
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            {activeFilterCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-orange-600 text-white text-[10px]">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
             disabled={!query.trim()}
             onClick={() => {
               onSaveSearch(query.trim(), mode);
@@ -175,6 +223,84 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
             <span className="hidden sm:inline">Save</span>
           </button>
         </div>
+
+        {/* Collapsible Size, Date & Sort Panel */}
+        {showFilterPanel && (
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200/70 dark:border-white/10 space-y-2 text-[11px]">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-semibold text-slate-500 mr-1">Size:</span>
+              {(
+                [
+                  { id: 'all', label: 'Any' },
+                  { id: 'lt100k', label: '<100 KB' },
+                  { id: '100k_1m', label: '100KB–1MB' },
+                  { id: '1m_10m', label: '1–10 MB' },
+                  { id: 'gt10m', label: '>10 MB' },
+                ] as const
+              ).map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setSizeFilter(s.id)}
+                  className={`px-2 py-1 rounded-md font-medium ${
+                    sizeFilter === s.id
+                      ? 'bg-orange-600 text-white'
+                      : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-semibold text-slate-500 mr-1">Modified:</span>
+                {(
+                  [
+                    { id: 'all', label: 'Anytime' },
+                    { id: '7d', label: 'Last 7d' },
+                    { id: '30d', label: 'Last 30d' },
+                  ] as const
+                ).map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => setDateFilter(d.id)}
+                    className={`px-2 py-1 rounded-md font-medium ${
+                      dateFilter === d.id
+                        ? 'bg-orange-600 text-white'
+                        : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortColumn)}
+                  aria-label="Sort search results"
+                  className="px-2 py-1 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 font-medium"
+                >
+                  <option value="score">Relevance</option>
+                  <option value="name">Name</option>
+                  <option value="size">Size</option>
+                  <option value="modified">Modified</option>
+                  <option value="extension">Type</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setSortOrder((o) => (o === 'desc' ? 'asc' : 'desc'))}
+                  className="px-2 py-1 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center gap-1 font-medium"
+                >
+                  <ArrowUpDown className="w-3 h-3" />
+                  <span>{sortOrder === 'desc' ? 'Desc' : 'Asc'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Single-Row Compact 6 Search Modes */}
         <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">

@@ -36,7 +36,7 @@ export const IndexDeviceTrigger: React.FC<IndexDeviceTriggerProps> = ({
   ariaLabel,
   children,
 }) => {
-  const runtime = useMemo(() => detectDeviceRuntime(), []);
+  const runtime = detectDeviceRuntime();
 
   if (runtime.hasNativeAndroidBridge || runtime.canUseDirectoryPickerDirect) {
     return (
@@ -100,7 +100,7 @@ export const SmartIndexingBar: React.FC<SmartIndexingBarProps> = ({
   compact = false,
 }) => {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const runtime = useMemo(() => detectDeviceRuntime(), []);
+  const runtime = detectDeviceRuntime();
 
   const isConnected =
     hasAllFilesPermission || linkedDeviceRootsCount > 0 || stats.totalFiles > 0;
