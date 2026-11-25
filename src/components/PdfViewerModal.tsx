@@ -380,24 +380,24 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
       aria-label={doc.title}
     >
       {/* Top iOS Reader Toolbar */}
-      <header className="shrink-0 z-20 pt-safe bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/10 px-3 sm:px-5 min-h-[52px] py-1.5 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+      <header className="shrink-0 z-20 pt-safe bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/10 px-3 sm:px-5 py-1.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto">
           <button
             onClick={onClose}
-            className="min-h-[44px] px-2 -ml-2 flex items-center gap-1 text-orange-600 dark:text-orange-400 font-semibold text-sm shrink-0"
+            className="min-h-[40px] px-2 -ml-2 flex items-center gap-1 text-orange-600 dark:text-orange-400 font-semibold text-sm shrink-0"
           >
             <ChevronLeft className="w-5 h-5" />
             <span>Back</span>
           </button>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="text-sm font-bold truncate">{doc.title}</h1>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums truncate whitespace-nowrap">
               Page {safeIdx + 1} of {doc.pages.length} · {formatBytes(doc.sizeBytes)}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center justify-between sm:justify-end gap-1 shrink-0 overflow-x-auto no-scrollbar">
           <button
             onClick={() => setShowFindBar((v) => !v)}
             title="Search OCR inside PDF"
