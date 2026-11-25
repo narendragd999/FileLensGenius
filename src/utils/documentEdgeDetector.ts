@@ -221,6 +221,40 @@ function morphClose(src: Float32Array, w: number, h: number, r = 2): Float32Arra
   return morph1D(morph1D(src, w, h, r, true), w, h, r, false);
 }
 
+/** O(1)-per-pixel separable box blur for local illumination normalization */
+function fastBoxBlur(src: Float32Array, w: number, h: number, r = 12): Float32Array {
+  const tmp = new Float32Array(w * h);
+  const dst = new Float32Array(w * h);
+
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let k = 0; k <= Math.min(w - 1, r); k++) sum += src[row + k];
+    for (let x = 0; x < w; x++) {
+      const left = x - r - 1;
+      const right = x + r + 1;
+      if (left >= 0) sum -= src[row + left];
+      if (right < w) sum += src[row + right];
+      const count = Math.min(w - 1, x + r) - Math.max(0, x - r) + 1;
+      tmp[row + x] = sum / count;
+    }
+  }
+
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let k = 0; k <= Math.min(h - 1, r); k++) sum += tmp[k * w + x];
+    for (let y = 0; y < h; y++) {
+      const top = y - r - 1;
+      const bot = y + r + 1;
+      if (top >= 0) sum -= tmp[top * w + x];
+      if (bot < h) sum += tmp[bot * w + x];
+      const count = Math.min(h - 1, y + r) - Math.max(0, y - r) + 1;
+      dst[y * w + x] = sum / count;
+    }
+  }
+  return dst;
+}
+
 function computeOtsuThreshold(values: Float32Array): number {
   const hist = new Int32Array(256);
   const n = values.length;
@@ -875,7 +909,14 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
   const closedGray = morphClose(rawGray, width, height, closeRadius);
   const closedWhite = morphClose(whiteness, width, height, closeRadius);
 
-  // 3. Sobel gradient magnitude on closedGray (only true region boundaries survive)
+  // 2b. Local Illumination Normalization (cancels desk shadows & uneven lighting)
+  const localBg = fastBoxBlur(closedGray, width, height, fastMode ? 10 : 14);
+  const shadowNormWhite = new Float32Array(totalPx);
+  for (let i = 0; i < totalPx; i++) {
+    shadowNormWhite[i] = Math.max(0, Math.min(255, closedWhite[i] - localBg[i] * 0.45 + 88));
+  }
+
+  // 3. Sobel gradient magnitude + contact-shadow ridge along paper borders
   const gradMag = new Float32Array(totalPx);
   for (let y = 1; y < height - 1; y++) {
     const row = y * width;
@@ -895,7 +936,9 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
         closedGray[i + width - 1] +
         2 * closedGray[i + width] +
         closedGray[i + width + 1];
-      gradMag[i] = (Math.abs(gx) + Math.abs(gy)) * 0.25;
+      const sobel = (Math.abs(gx) + Math.abs(gy)) * 0.25;
+      const shadowRidge = Math.max(0, localBg[i] - closedGray[i]) * 0.45;
+      gradMag[i] = sobel + shadowRidge;
     }
   }
 
@@ -931,6 +974,9 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     const c = detectQuadFromComponent(closedWhite, gradMag, width, height, t);
     if (c) candidates.push(c);
   }
+  const normOtsu = computeOtsuThreshold(shadowNormWhite);
+  const cNorm = detectQuadFromComponent(shadowNormWhite, gradMag, width, height, normOtsu);
+  if (cNorm) candidates.push(cNorm);
 
   const cScan = detectQuadFromClosedScanlines(closedGray, closedWhite, width, height);
   if (cScan) candidates.push(cScan);

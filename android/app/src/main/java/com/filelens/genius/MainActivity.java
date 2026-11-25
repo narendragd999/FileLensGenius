@@ -10,6 +10,11 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
+import android.graphics.Matrix;
+import android.graphics.Paint;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -909,6 +914,95 @@ public class MainActivity extends BridgeActivity {
                         safeId + ",text:" + safeText + "}}));",
                     null
                 );
+            });
+        }
+
+        @JavascriptInterface
+        public void rectifyQuadNativeAsync(
+            String requestId,
+            String imageDataUrl,
+            float tlX, float tlY,
+            float trX, float trY,
+            float brX, float brY,
+            float blX, float blY,
+            int rotation,
+            int maxDim
+        ) {
+            scanExecutor.execute(() -> {
+                String outDataUrl = "";
+                try {
+                    String b64 = imageDataUrl;
+                    int comma = b64.indexOf(',');
+                    if (comma >= 0) b64 = b64.substring(comma + 1);
+                    byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                    Bitmap src = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (src != null) {
+                        int sw = src.getWidth();
+                        int sh = src.getHeight();
+                        float[] srcPts = new float[]{
+                            tlX * sw, tlY * sh,
+                            trX * sw, trY * sh,
+                            brX * sw, brY * sh,
+                            blX * sw, blY * sh
+                        };
+                        double topW = Math.hypot((trX - tlX) * sw, (trY - tlY) * sh);
+                        double botW = Math.hypot((brX - blX) * sw, (brY - blY) * sh);
+                        double leftH = Math.hypot((blX - tlX) * sw, (blY - tlY) * sh);
+                        double rightH = Math.hypot((brX - trX) * sw, (brY - trY) * sh);
+                        double avgW = (topW + botW) * 0.5;
+                        double avgH = Math.max(1.0, (leftH + rightH) * 0.5);
+                        double aspect = Math.max(0.45, Math.min(2.2, avgW / avgH));
+                        int baseW = Math.min(maxDim > 0 ? maxDim : 2400, Math.max(700, (int) Math.round(Math.max(topW, botW))));
+                        int tw = aspect >= 1.0 ? baseW : Math.max(1, (int) Math.round(baseW * aspect));
+                        int th = aspect >= 1.0 ? Math.max(1, (int) Math.round(baseW / aspect)) : baseW;
+
+                        float[] dstPts = new float[]{
+                            0f, 0f,
+                            (float) tw, 0f,
+                            (float) tw, (float) th,
+                            0f, (float) th
+                        };
+                        Matrix polyMatrix = new Matrix();
+                        polyMatrix.setPolyToPoly(srcPts, 0, dstPts, 0, 4);
+
+                        Bitmap warped = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888);
+                        Canvas c = new Canvas(warped);
+                        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+                        ColorMatrix cm = new ColorMatrix(new float[]{
+                            1.06f, 0f, 0f, 0f, -6f,
+                            0f, 1.06f, 0f, 0f, -6f,
+                            0f, 0f, 1.06f, 0f, -6f,
+                            0f, 0f, 0f, 1f, 0f
+                        });
+                        p.setColorFilter(new ColorMatrixColorFilter(cm));
+                        c.drawBitmap(src, polyMatrix, p);
+                        src.recycle();
+
+                        Bitmap finalBmp = warped;
+                        if (rotation == 90 || rotation == 180 || rotation == 270) {
+                            Matrix rm = new Matrix();
+                            rm.postRotate((float) rotation);
+                            finalBmp = Bitmap.createBitmap(warped, 0, 0, tw, th, rm, true);
+                            warped.recycle();
+                        }
+
+                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                        finalBmp.compress(Bitmap.CompressFormat.JPEG, 94, bos);
+                        finalBmp.recycle();
+                        outDataUrl = "data:image/jpeg;base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP);
+                    }
+                } catch (Exception ignored) {
+                }
+                final String safeId = JSONObject.quote(requestId != null ? requestId : "");
+                final String safeUrl = JSONObject.quote(outDataUrl);
+                runOnUiThread(() -> {
+                    if (getBridge() == null || getBridge().getWebView() == null) return;
+                    getBridge().getWebView().evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('filelens-native-rectify-result',{detail:{requestId:" +
+                            safeId + ",dataUrl:" + safeUrl + "}}));",
+                        null
+                    );
+                });
             });
         }
 

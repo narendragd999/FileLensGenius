@@ -1,5 +1,6 @@
 import { jsPDF, jsPDFOptions } from 'jspdf';
 import JSZip from 'jszip';
+import { rectifyQuadWithNativeSkia } from './deviceRoots';
 import {
   DocumentPage,
   FULL_QUAD,
@@ -280,6 +281,8 @@ export async function rectifyPageToStraightImage(
   maxDim = 2400
 ): Promise<string> {
   if (isFullQuad(quad) && rotation === 0) return rawImageUrl;
+  const nativeUrl = await rectifyQuadWithNativeSkia(rawImageUrl, quad, rotation, maxDim);
+  if (nativeUrl) return nativeUrl;
   const img = await loadImage(rawImageUrl);
 
   let warped: HTMLCanvasElement;

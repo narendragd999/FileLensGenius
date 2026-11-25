@@ -53,6 +53,20 @@ export interface FileLensAndroidBridge {
   stopVoiceCapture?: () => void;
   launchGoogleDocScanner?: (mode: string) => boolean;
   extractTextWithMlKitAsync?: (requestId: string, imageDataUrl: string, lang: string) => void;
+  rectifyQuadNativeAsync?: (
+    requestId: string,
+    imageDataUrl: string,
+    tlX: number,
+    tlY: number,
+    trX: number,
+    trY: number,
+    brX: number,
+    brY: number,
+    blX: number,
+    blY: number,
+    rotation: number,
+    maxDim: number
+  ) => void;
   isBatteryOptimizationIgnored?: () => boolean;
   requestIgnoreBatteryOptimizations?: () => boolean;
   consumePendingShareIntent?: () => string;
@@ -285,6 +299,64 @@ export function extractTextWithNativeMlKit(imageDataUrl: string, lang = 'eng+hin
         settled = true;
         window.clearTimeout(timer);
         window.removeEventListener('filelens-mlkit-ocr-result', handler);
+        resolve('');
+      }
+    }
+  });
+}
+
+let rectifySeq = 0;
+
+export function rectifyQuadWithNativeSkia(
+  imageDataUrl: string,
+  quad: { tlX: number; tlY: number; trX: number; trY: number; brX: number; brY: number; blX: number; blY: number },
+  rotation: number,
+  maxDim = 2400
+): Promise<string> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof window.FileLensAndroid?.rectifyQuadNativeAsync !== 'function') {
+      resolve('');
+      return;
+    }
+    const reqId = `rect-${Date.now()}-${++rectifySeq}`;
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('filelens-native-rectify-result', handler);
+      resolve('');
+    }, 4500);
+
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ requestId?: string; dataUrl?: string }>).detail;
+      if (detail?.requestId !== reqId || settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('filelens-native-rectify-result', handler);
+      resolve(detail.dataUrl || '');
+    };
+
+    window.addEventListener('filelens-native-rectify-result', handler);
+    try {
+      window.FileLensAndroid.rectifyQuadNativeAsync(
+        reqId,
+        imageDataUrl,
+        quad.tlX,
+        quad.tlY,
+        quad.trX,
+        quad.trY,
+        quad.brX,
+        quad.brY,
+        quad.blX,
+        quad.blY,
+        rotation,
+        maxDim
+      );
+    } catch {
+      if (!settled) {
+        settled = true;
+        window.clearTimeout(timer);
+        window.removeEventListener('filelens-native-rectify-result', handler);
         resolve('');
       }
     }
