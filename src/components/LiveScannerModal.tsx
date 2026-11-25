@@ -91,7 +91,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const [autoCapture, setAutoCapture] = useState<boolean>(false);
   const [batchPace, setBatchPace] = useState<BatchAutoPace>(preferences.batchPace);
   const [flashMode, setFlashMode] = useState<'auto' | 'on' | 'off'>('auto');
-  const [autoTorchActive, setAutoTorchActive] = useState<boolean>(false);
+  const [autoTorchActive, setAutoTorchActive] = useState<boolean>(true);
   const effectiveFlashOn = flashMode === 'on' || (flashMode === 'auto' && autoTorchActive);
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [cameraZoom, setCameraZoom] = useState<1 | 2>(1);
@@ -388,10 +388,35 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         return;
       }
 
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.filter = 'contrast(1.06) brightness(1.02) saturate(1.04)';
       ctx.drawImage(video, 0, 0, outW, outH);
       ctx.filter = 'none';
-      const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.94);
+
+      // Fast 3x3 unsharp-mask pass so distant text stays crisp and legible
+      const imgData = ctx.getImageData(0, 0, outW, outH);
+      const src = imgData.data;
+      const copy = new Uint8ClampedArray(src);
+      const amount = 0.35;
+      for (let y = 1; y < outH - 1; y++) {
+        const row = y * outW;
+        for (let x = 1; x < outW - 1; x++) {
+          const i = (row + x) * 4;
+          const up = ((row - outW) + x) * 4;
+          const dn = ((row + outW) + x) * 4;
+          const lf = i - 4;
+          const rt = i + 4;
+          for (let c = 0; c < 3; c++) {
+            const blur = (copy[up + c] + copy[dn + c] + copy[lf + c] + copy[rt + c]) * 0.25;
+            const sharp = copy[i + c] + (copy[i + c] - blur) * amount;
+            src[i + c] = sharp < 0 ? 0 : sharp > 255 ? 255 : sharp;
+          }
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
       navigator.vibrate?.(20);
 
       // Snapshot visual 8x8 luma fingerprint so Auto-Capture never duplicates the same page!
@@ -520,8 +545,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         let sumLuma = 0;
         for (let k = 0; k < analysis.fingerprint.length; k++) sumLuma += analysis.fingerprint[k];
         const meanLuma = sumLuma / analysis.fingerprint.length;
-        if (meanLuma < 0.34) setAutoTorchActive(true);
-        else if (meanLuma > 0.48) setAutoTorchActive(false);
+        if (meanLuma < 0.65) setAutoTorchActive(true);
+        else if (meanLuma > 0.78) setAutoTorchActive(false);
       }
 
       // Anti-Duplicate Smart Page-Change Gate (ported from LiveDocumentCameraView.kt)
