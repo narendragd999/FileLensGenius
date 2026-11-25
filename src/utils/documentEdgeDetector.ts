@@ -1289,8 +1289,95 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
   return { quad, confidence: bestScore, fingerprint };
 }
 
+export function detectNeuralQuadFromDataUrl(
+  dataUrl: string
+): { quad: NormalizedQuad; confidence: number } | null {
+  try {
+    const fn = window.FileLensAndroid?.detectDocumentQuadNative;
+    if (typeof fn !== 'function' || !dataUrl) return null;
+    const raw = fn(dataUrl);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<NormalizedQuad> & { confidence?: number };
+    if (
+      typeof parsed.tlX !== 'number' ||
+      typeof parsed.tlY !== 'number' ||
+      typeof parsed.trX !== 'number' ||
+      typeof parsed.trY !== 'number' ||
+      typeof parsed.brX !== 'number' ||
+      typeof parsed.brY !== 'number' ||
+      typeof parsed.blX !== 'number' ||
+      typeof parsed.blY !== 'number'
+    ) {
+      return null;
+    }
+    const conf = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+    if (conf < 0.25) return null;
+
+    const clamp01 = (v: number) => Math.max(0.01, Math.min(0.99, v));
+    const quad: NormalizedQuad = {
+      tlX: clamp01(parsed.tlX),
+      tlY: clamp01(parsed.tlY),
+      trX: clamp01(parsed.trX),
+      trY: clamp01(parsed.trY),
+      brX: clamp01(parsed.brX),
+      brY: clamp01(parsed.brY),
+      blX: clamp01(parsed.blX),
+      blY: clamp01(parsed.blY),
+    };
+    const pts: Pt[] = [
+      { x: quad.tlX, y: quad.tlY },
+      { x: quad.trX, y: quad.trY },
+      { x: quad.brX, y: quad.brY },
+      { x: quad.blX, y: quad.blY },
+    ];
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % 4];
+      const c = pts[(i + 2) % 4];
+      const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (Math.abs(cross) < 1e-5) return null;
+      const s = cross > 0 ? 1 : -1;
+      if (sign === 0) sign = s;
+      else if (sign !== s) return null;
+    }
+    const area =
+      0.5 *
+      Math.abs(
+        quad.tlX * quad.trY -
+          quad.trX * quad.tlY +
+          (quad.trX * quad.brY - quad.brX * quad.trY) +
+          (quad.brX * quad.blY - quad.blX * quad.brY) +
+          (quad.blX * quad.tlY - quad.tlX * quad.blY)
+      );
+    if (area < 0.05 || area > 0.95) return null;
+    return { quad, confidence: conf };
+  } catch {
+    return null;
+  }
+}
+
+export function detectNeuralQuadFromCanvas(
+  canvas: HTMLCanvasElement
+): { quad: NormalizedQuad; confidence: number } | null {
+  try {
+    if (typeof window.FileLensAndroid?.detectDocumentQuadNative !== 'function') return null;
+    return detectNeuralQuadFromDataUrl(canvas.toDataURL('image/jpeg', 0.85));
+  } catch {
+    return null;
+  }
+}
+
 export async function detectQuadFromImageUrl(imageUrl: string): Promise<NormalizedQuad> {
   return new Promise((resolve) => {
+    const neuralDirect = imageUrl.startsWith('data:image/')
+      ? detectNeuralQuadFromDataUrl(imageUrl)
+      : null;
+    if (neuralDirect && neuralDirect.confidence >= 0.42) {
+      resolve(neuralDirect.quad);
+      return;
+    }
+
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -1304,14 +1391,19 @@ export async function detectQuadFromImageUrl(imageUrl: string): Promise<Normaliz
       canvas.height = targetH;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) {
-        resolve(FULL_QUAD);
+        resolve(neuralDirect?.quad ?? FULL_QUAD);
         return;
       }
       ctx.drawImage(img, 0, 0, targetW, targetH);
+      const neural = neuralDirect ?? detectNeuralQuadFromCanvas(canvas);
+      if (neural && neural.confidence >= 0.36) {
+        resolve(neural.quad);
+        return;
+      }
       const result = analyzeCanvasFrame(canvas);
-      resolve(result.quad ?? FULL_QUAD);
+      resolve(result.quad ?? neural?.quad ?? FULL_QUAD);
     };
-    img.onerror = () => resolve(FULL_QUAD);
+    img.onerror = () => resolve(neuralDirect?.quad ?? FULL_QUAD);
     img.src = imageUrl;
   });
 }

@@ -1251,6 +1251,11 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public String detectDocumentQuadNative(String base64DataUrl) {
+            return DocAlignerDetector.detectQuadJson(MainActivity.this, base64DataUrl);
+        }
+
+        @JavascriptInterface
         public boolean setDeviceClockAlarm(int hour, int minute, String label) {
             try {
                 Intent intent = new Intent(AlarmClock.ACTION_SET_ALARM)

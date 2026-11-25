@@ -48,6 +48,7 @@ import {
   analyzeCanvasFrame,
   computeFingerprintDelta,
   computeQuadDelta,
+  detectNeuralQuadFromCanvas,
   detectQuadFromImageUrl,
   isFullQuad,
 } from '../utils/documentEdgeDetector';
@@ -639,8 +640,10 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     }
 
     let missedFrames = 0;
+    let frameTick = 0;
     let pendingJumpQuad: NormalizedQuad | null = null;
     let jumpConfirmCount = 0;
+    let lastNeuralResult: { quad: NormalizedQuad; confidence: number; ts: number } | null = null;
 
     const timer = window.setInterval(() => {
       const video = videoRef.current;
@@ -653,6 +656,24 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const analysis = analyzeCanvasFrame(canvas, true);
       latestFpRef.current = analysis.fingerprint;
+
+      frameTick++;
+      if (frameTick % 2 === 1 && typeof window.FileLensAndroid?.detectDocumentQuadNative === 'function') {
+        const neural = detectNeuralQuadFromCanvas(canvas);
+        if (neural && neural.confidence >= 0.38) {
+          lastNeuralResult = { quad: neural.quad, confidence: neural.confidence, ts: Date.now() };
+        }
+      }
+      const activeNeural =
+        lastNeuralResult && Date.now() - lastNeuralResult.ts < 850 ? lastNeuralResult : null;
+      const chosenQuad =
+        activeNeural && activeNeural.confidence >= 0.42
+          ? activeNeural.quad
+          : (analysis.quad ?? activeNeural?.quad ?? null);
+      const chosenConfidence =
+        activeNeural && activeNeural.confidence >= 0.42
+          ? Math.max(analysis.confidence, activeNeural.confidence)
+          : Math.max(analysis.confidence, activeNeural?.confidence ?? 0);
 
       if (flashMode === 'auto' && analysis.fingerprint.length > 0) {
         let sumLuma = 0;
@@ -673,16 +694,16 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         }
       }
 
-      if (analysis.quad && analysis.confidence >= 0.50) {
+      if (chosenQuad && chosenConfidence >= 0.42) {
         missedFrames = 0;
         const prev = lastQuadRef.current;
 
         // Outlier jump rejection: require 2 consecutive agreeing frames for sudden large jumps
-        if (prev && computeQuadDelta(prev, analysis.quad) > 0.12) {
-          if (pendingJumpQuad && computeQuadDelta(pendingJumpQuad, analysis.quad) < 0.08) {
+        if (prev && computeQuadDelta(prev, chosenQuad) > 0.12) {
+          if (pendingJumpQuad && computeQuadDelta(pendingJumpQuad, chosenQuad) < 0.08) {
             jumpConfirmCount += 1;
           } else {
-            pendingJumpQuad = analysis.quad;
+            pendingJumpQuad = chosenQuad;
             jumpConfirmCount = 1;
           }
           if (jumpConfirmCount < 2) {
@@ -692,25 +713,25 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         pendingJumpQuad = null;
         jumpConfirmCount = 0;
 
-        const rawDelta = computeQuadDelta(prev, analysis.quad);
+        const rawDelta = computeQuadDelta(prev, chosenQuad);
         const alpha = prev ? (rawDelta < 0.025 ? 0.22 : 0.52) : 1;
         const smoothed: NormalizedQuad = prev
           ? {
-              tlX: prev.tlX * (1 - alpha) + analysis.quad.tlX * alpha,
-              tlY: prev.tlY * (1 - alpha) + analysis.quad.tlY * alpha,
-              trX: prev.trX * (1 - alpha) + analysis.quad.trX * alpha,
-              trY: prev.trY * (1 - alpha) + analysis.quad.trY * alpha,
-              brX: prev.brX * (1 - alpha) + analysis.quad.brX * alpha,
-              brY: prev.brY * (1 - alpha) + analysis.quad.brY * alpha,
-              blX: prev.blX * (1 - alpha) + analysis.quad.blX * alpha,
-              blY: prev.blY * (1 - alpha) + analysis.quad.blY * alpha,
+              tlX: prev.tlX * (1 - alpha) + chosenQuad.tlX * alpha,
+              tlY: prev.tlY * (1 - alpha) + chosenQuad.tlY * alpha,
+              trX: prev.trX * (1 - alpha) + chosenQuad.trX * alpha,
+              trY: prev.trY * (1 - alpha) + chosenQuad.trY * alpha,
+              brX: prev.brX * (1 - alpha) + chosenQuad.brX * alpha,
+              brY: prev.brY * (1 - alpha) + chosenQuad.brY * alpha,
+              blX: prev.blX * (1 - alpha) + chosenQuad.blX * alpha,
+              blY: prev.blY * (1 - alpha) + chosenQuad.blY * alpha,
             }
-          : analysis.quad;
+          : chosenQuad;
 
         const delta = computeQuadDelta(prev, smoothed);
         lastQuadRef.current = smoothed;
         setDetectedQuad(smoothed);
-        setEdgeConfidence(analysis.confidence);
+        setEdgeConfidence(chosenConfidence);
 
         const cooldownMs =
           batchPace === 'delay_5s' ? 5000 : batchPace === 'delay_3s' ? 3000 : 1800;

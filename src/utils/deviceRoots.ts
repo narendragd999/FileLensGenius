@@ -83,6 +83,7 @@ export interface FileLensAndroidBridge {
   openInNativeViewer?: (fileName: string, mimeType: string, base64Data: string) => boolean;
   shareFileViaNativeChooser?: (fileName: string, mimeType: string, base64Data: string) => boolean;
   clearNativeAppCache?: () => number;
+  detectDocumentQuadNative?: (base64DataUrl: string) => string;
 }
 
 export interface AndroidNativeFileMeta {
