@@ -1,6 +1,8 @@
 import { jsPDF, jsPDFOptions } from 'jspdf';
 import {
   DocumentPage,
+  FULL_QUAD,
+  NormalizedQuad,
   OcrLanguage,
   PdfCompressPreset,
   PdfQualityPreset,
@@ -265,6 +267,63 @@ export async function renderPageToDataUrl(
   };
 }
 
+/**
+ * Straighten a skewed/cropped quadrilateral into a full-bleed rectangular scan image
+ * (with optional rotation baked in) so previews, thumbnails, and PDF exports are 100% aligned.
+ */
+export async function rectifyPageToStraightImage(
+  rawImageUrl: string,
+  quad: NormalizedQuad,
+  rotation: 0 | 90 | 180 | 270 = 0,
+  maxDim = 1800
+): Promise<string> {
+  if (isFullQuad(quad) && rotation === 0) return rawImageUrl;
+  const img = await loadImage(rawImageUrl);
+
+  let warped: HTMLCanvasElement;
+  if (!isFullQuad(quad)) {
+    const aspect = estimateRectifiedAspectRatio(quad, img.naturalWidth, img.naturalHeight);
+    const baseW = Math.min(
+      maxDim,
+      Math.max(
+        700,
+        Math.round(
+          Math.max(
+            Math.hypot((quad.trX - quad.tlX) * img.naturalWidth, (quad.trY - quad.tlY) * img.naturalHeight),
+            Math.hypot((quad.brX - quad.blX) * img.naturalWidth, (quad.brY - quad.blY) * img.naturalHeight)
+          )
+        )
+      )
+    );
+    const targetW = aspect >= 1 ? baseW : Math.round(baseW * aspect);
+    const targetH = aspect >= 1 ? Math.round(baseW / aspect) : baseW;
+    warped = warpPerspectiveToCanvas(img, quad, targetW, targetH);
+  } else {
+    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+    warped = document.createElement('canvas');
+    warped.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    warped.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const wCtx = warped.getContext('2d');
+    if (wCtx) wCtx.drawImage(img, 0, 0, warped.width, warped.height);
+  }
+
+  if (rotation === 0) {
+    return warped.toDataURL('image/jpeg', 0.9);
+  }
+
+  const isSideways = rotation === 90 || rotation === 270;
+  const out = document.createElement('canvas');
+  out.width = isSideways ? warped.height : warped.width;
+  out.height = isSideways ? warped.width : warped.height;
+  const oCtx = out.getContext('2d');
+  if (!oCtx) return warped.toDataURL('image/jpeg', 0.9);
+
+  oCtx.translate(out.width / 2, out.height / 2);
+  oCtx.rotate((rotation * Math.PI) / 180);
+  oCtx.drawImage(warped, -warped.width / 2, -warped.height / 2);
+  return out.toDataURL('image/jpeg', 0.9);
+}
+
 export async function exportDocumentAsPdf(
   doc: ScanDocument,
   password?: string
@@ -323,7 +382,8 @@ export async function exportDocumentAsPdf(
       }
     }
 
-    const margin = doc.pageSizePreset === 'auto' ? 0 : 8;
+    // Full-bleed fit to PDF page (Genius Scan iOS style)
+    const margin = 0;
     const availW = pageW - margin * 2;
     const availH = pageH - margin * 2;
     const ratio = Math.min(availW / imgW, availH / imgH);

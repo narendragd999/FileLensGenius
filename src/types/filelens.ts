@@ -110,6 +110,8 @@ export interface WatermarkConfig {
 export interface DocumentPage {
   id: string;
   imageUrl: string;
+  originalImageUrl?: string;
+  originalQuad?: NormalizedQuad;
   rotation: 0 | 90 | 180 | 270;
   filter: ScanFilterId;
   quad: NormalizedQuad;

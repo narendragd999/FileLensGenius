@@ -22,7 +22,7 @@ import {
   snapCornerToEdge,
   squareUpQuadToRectangle,
 } from '../utils/documentEdgeDetector';
-import { renderPageToDataUrl } from '../utils/pdfExport';
+import { rectifyPageToStraightImage, renderPageToDataUrl } from '../utils/pdfExport';
 
 interface PerspectiveCropModalProps {
   page: DocumentPage;
@@ -41,15 +41,17 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
   onSave,
   onClose,
 }) => {
-  const [quad, setQuad] = useState<NormalizedQuad>(page.quad);
+  const rawImageUrl = page.originalImageUrl || page.imageUrl;
+  const [quad, setQuad] = useState<NormalizedQuad>(page.originalQuad || page.quad);
   const [undoStack, setUndoStack] = useState<{ quad: NormalizedQuad; rotation: 0 | 90 | 180 | 270 }[]>([]);
   const [filter, setFilter] = useState<ScanFilterId>(page.filter);
-  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(page.rotation);
+  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(page.originalImageUrl ? 0 : page.rotation);
   const [brightness, setBrightness] = useState<number>(page.brightness ?? 1);
   const [contrast, setContrast] = useState<number>(page.contrast ?? 1);
   const [activeTab, setActiveTab] = useState<'crop' | 'preview' | 'filter' | 'adjust'>('crop');
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
+  const [isApplying, setIsApplying] = useState<boolean>(false);
   const [compareOriginal, setCompareOriginal] = useState<boolean>(false);
   const [snapEnabled, setSnapEnabled] = useState<boolean>(true);
   const [snapMap, setSnapMap] = useState<{ map: Float32Array; size: number } | null>(null);
@@ -59,20 +61,20 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
 
   useEffect(() => {
     let active = true;
-    void computeEdgeSnapMap(page.imageUrl).then((m) => {
+    void computeEdgeSnapMap(rawImageUrl).then((m) => {
       if (active) setSnapMap(m);
     });
     return () => {
       active = false;
     };
-  }, [page.imageUrl]);
+  }, [rawImageUrl]);
 
   useEffect(() => {
     if (activeTab !== 'preview') return;
     let active = true;
     setIsRenderingPreview(true);
     void renderPageToDataUrl(
-      { ...page, quad, filter, rotation, brightness, contrast },
+      { ...page, imageUrl: rawImageUrl, quad, filter, rotation, brightness, contrast },
       null,
       'balanced'
     )
@@ -85,14 +87,14 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
     return () => {
       active = false;
     };
-  }, [activeTab, page, quad, filter, rotation, brightness, contrast]);
+  }, [activeTab, page, rawImageUrl, quad, filter, rotation, brightness, contrast]);
 
   // Auto-detect white A4 paper edges on open if page is currently uncropped
   useEffect(() => {
-    if (!isFullQuad(page.quad)) return;
+    if (!isFullQuad(page.originalQuad || page.quad)) return;
     let active = true;
     setIsDetecting(true);
-    void detectQuadFromImageUrl(page.imageUrl)
+    void detectQuadFromImageUrl(rawImageUrl)
       .then((detected) => {
         if (!active) return;
         if (!isFullQuad(detected)) {
@@ -105,7 +107,7 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
     return () => {
       active = false;
     };
-  }, [page.imageUrl, page.quad]);
+  }, [rawImageUrl, page.originalQuad, page.quad]);
 
   const pushUndo = (prevQuad = quad, prevRot = rotation) => {
     setUndoStack((s) => [...s.slice(-19), { quad: prevQuad, rotation: prevRot }]);
@@ -168,7 +170,7 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
     setIsDetecting(true);
     pushUndo();
     try {
-      const detected = await detectQuadFromImageUrl(page.imageUrl);
+      const detected = await detectQuadFromImageUrl(rawImageUrl);
       const isFull =
         detected.tlX <= 0.01 &&
         detected.tlY <= 0.01 &&
@@ -204,15 +206,24 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
     setRotation((r) => (((r + 90) % 360) as 0 | 90 | 180 | 270));
   };
 
-  const handleSave = () => {
-    onSave({
-      ...page,
-      quad,
-      filter,
-      rotation,
-      brightness,
-      contrast,
-    });
+  const handleSave = async () => {
+    setIsApplying(true);
+    try {
+      const straightenedUrl = await rectifyPageToStraightImage(rawImageUrl, quad, rotation);
+      onSave({
+        ...page,
+        imageUrl: straightenedUrl,
+        originalImageUrl: rawImageUrl,
+        originalQuad: quad,
+        quad: FULL_QUAD,
+        filter,
+        rotation: 0,
+        brightness,
+        contrast,
+      });
+    } finally {
+      setIsApplying(false);
+    }
   };
 
   const corners: { key: CornerKey; x: number; y: number }[] = [
@@ -281,10 +292,11 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
           )}
           <button
             onClick={handleSave}
-            className="min-h-[40px] px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-sm font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            disabled={isApplying}
+            className="min-h-[40px] px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-sm font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap disabled:opacity-60"
           >
             <Check className="w-4 h-4" />
-            <span>Apply</span>
+            <span>{isApplying ? 'Fitting…' : 'Apply'}</span>
           </button>
         </div>
       </div>
@@ -336,7 +348,7 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
               style={{ transform: `rotate(${rotation}deg)` }}
             >
               <img
-                src={page.imageUrl}
+                src={rawImageUrl}
                 alt={`Page ${pageNumber} edit preview`}
                 referrerPolicy="no-referrer"
                 className={`w-full h-full object-contain ${

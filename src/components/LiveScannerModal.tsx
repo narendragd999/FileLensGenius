@@ -42,12 +42,13 @@ import {
   SMART_CARD_CATEGORIES,
 } from '../data/seedData';
 import { resolveNamingTemplate } from '../utils/formatters';
-import { composeTwoInOneA4IdCard } from '../utils/pdfExport';
+import { composeTwoInOneA4IdCard, rectifyPageToStraightImage } from '../utils/pdfExport';
 import {
   analyzeCanvasFrame,
   computeFingerprintDelta,
   computeQuadDelta,
   detectQuadFromImageUrl,
+  isFullQuad,
 } from '../utils/documentEdgeDetector';
 import { runRealOcrOnImage } from '../utils/smartIndexer';
 import {
@@ -434,14 +435,29 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
       enrichPageWithRealOcr(pageId, capturedDataUrl);
 
-      // Auto-detect white A4 paper borders on captured photo if live tracker didn't lock yet
-      if (effectiveQuad === FULL_QUAD) {
-        void detectQuadFromImageUrl(capturedDataUrl).then((autoQuad) => {
+      // Auto-detect white A4 paper borders & straighten immediately on capture!
+      void (async () => {
+        const autoQuad =
+          !isFullQuad(effectiveQuad)
+            ? effectiveQuad
+            : await detectQuadFromImageUrl(capturedDataUrl);
+        if (!isFullQuad(autoQuad)) {
+          const straightUrl = await rectifyPageToStraightImage(capturedDataUrl, autoQuad, 0);
           setCapturedPages((prev) =>
-            prev.map((p) => (p.id === pageId ? { ...p, quad: autoQuad } : p))
+            prev.map((p) =>
+              p.id === pageId
+                ? {
+                    ...p,
+                    imageUrl: straightUrl,
+                    originalImageUrl: capturedDataUrl,
+                    originalQuad: autoQuad,
+                    quad: FULL_QUAD,
+                  }
+                : p
+            )
           );
-        });
-      }
+        }
+      })();
 
       setTimeout(() => {
         captureLockRef.current = false;
@@ -558,12 +574,17 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             reader.onload = async () => {
               const dataUrl = String(reader.result);
               const detected = await detectQuadFromImageUrl(dataUrl);
+              const straightUrl = !isFullQuad(detected)
+                ? await rectifyPageToStraightImage(dataUrl, detected, 0)
+                : dataUrl;
               resolve({
                 id: `pg-file-${Date.now()}-${idx}`,
-                imageUrl: dataUrl,
+                imageUrl: straightUrl,
+                originalImageUrl: dataUrl,
+                originalQuad: detected,
                 rotation: 0,
                 filter: activeFilter,
-                quad: detected,
+                quad: FULL_QUAD,
                 brightness: 1,
                 contrast: 1,
                 ocrText: '',
