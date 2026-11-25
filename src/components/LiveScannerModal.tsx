@@ -477,9 +477,13 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
     if (!analysisCanvasRef.current) {
       analysisCanvasRef.current = document.createElement('canvas');
-      analysisCanvasRef.current.width = 128;
-      analysisCanvasRef.current.height = 170;
+      analysisCanvasRef.current.width = 192;
+      analysisCanvasRef.current.height = 256;
     }
+
+    let missedFrames = 0;
+    let pendingJumpQuad: NormalizedQuad | null = null;
+    let jumpConfirmCount = 0;
 
     const timer = window.setInterval(() => {
       const video = videoRef.current;
@@ -503,18 +507,37 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         }
       }
 
-      if (analysis.quad && analysis.confidence >= 0.52) {
+      if (analysis.quad && analysis.confidence >= 0.50) {
+        missedFrames = 0;
         const prev = lastQuadRef.current;
+
+        // Outlier jump rejection: require 2 consecutive agreeing frames for sudden large jumps
+        if (prev && computeQuadDelta(prev, analysis.quad) > 0.12) {
+          if (pendingJumpQuad && computeQuadDelta(pendingJumpQuad, analysis.quad) < 0.08) {
+            jumpConfirmCount += 1;
+          } else {
+            pendingJumpQuad = analysis.quad;
+            jumpConfirmCount = 1;
+          }
+          if (jumpConfirmCount < 2) {
+            return;
+          }
+        }
+        pendingJumpQuad = null;
+        jumpConfirmCount = 0;
+
+        const rawDelta = computeQuadDelta(prev, analysis.quad);
+        const alpha = prev ? (rawDelta < 0.025 ? 0.22 : 0.52) : 1;
         const smoothed: NormalizedQuad = prev
           ? {
-              tlX: prev.tlX * 0.55 + analysis.quad.tlX * 0.45,
-              tlY: prev.tlY * 0.55 + analysis.quad.tlY * 0.45,
-              trX: prev.trX * 0.55 + analysis.quad.trX * 0.45,
-              trY: prev.trY * 0.55 + analysis.quad.trY * 0.45,
-              brX: prev.brX * 0.55 + analysis.quad.brX * 0.45,
-              brY: prev.brY * 0.55 + analysis.quad.brY * 0.45,
-              blX: prev.blX * 0.55 + analysis.quad.blX * 0.45,
-              blY: prev.blY * 0.55 + analysis.quad.blY * 0.45,
+              tlX: prev.tlX * (1 - alpha) + analysis.quad.tlX * alpha,
+              tlY: prev.tlY * (1 - alpha) + analysis.quad.tlY * alpha,
+              trX: prev.trX * (1 - alpha) + analysis.quad.trX * alpha,
+              trY: prev.trY * (1 - alpha) + analysis.quad.trY * alpha,
+              brX: prev.brX * (1 - alpha) + analysis.quad.brX * alpha,
+              brY: prev.brY * (1 - alpha) + analysis.quad.brY * alpha,
+              blX: prev.blX * (1 - alpha) + analysis.quad.blX * alpha,
+              blY: prev.blY * (1 - alpha) + analysis.quad.blY * alpha,
             }
           : analysis.quad;
 
@@ -527,23 +550,38 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           batchPace === 'delay_5s' ? 5000 : batchPace === 'delay_3s' ? 3000 : 1800;
         const cooldownElapsed = Date.now() - lastAutoShotMsRef.current >= cooldownMs;
 
-        if (autoCapture && !waitingPageSwapRef.current && cooldownElapsed && delta < 0.032) {
+        if (
+          autoCapture &&
+          !waitingPageSwapRef.current &&
+          cooldownElapsed &&
+          analysis.confidence >= 0.62 &&
+          delta < 0.020
+        ) {
           stableFramesRef.current += 1;
-          const progress = Math.min(1, stableFramesRef.current / 7);
+          const progress = Math.min(1, stableFramesRef.current / 6);
           setStabilityProgress(progress);
-          if (stableFramesRef.current >= 7) {
+          if (stableFramesRef.current >= 6) {
             captureLiveVideoFrame(smoothed);
           }
         } else {
           stableFramesRef.current = Math.max(0, stableFramesRef.current - 1);
-          setStabilityProgress(Math.min(1, stableFramesRef.current / 7));
+          setStabilityProgress(Math.min(1, stableFramesRef.current / 6));
         }
       } else {
-        stableFramesRef.current = 0;
-        setStabilityProgress(0);
-        setDetectedQuad(null);
-        setEdgeConfidence(0);
-        lastQuadRef.current = null;
+        missedFrames += 1;
+        pendingJumpQuad = null;
+        jumpConfirmCount = 0;
+        // Hold locked overlay briefly across 1-3 transient frames to prevent flicker
+        if (missedFrames <= 3 && lastQuadRef.current) {
+          stableFramesRef.current = Math.max(0, stableFramesRef.current - 1);
+          setStabilityProgress(Math.min(1, stableFramesRef.current / 6));
+        } else {
+          stableFramesRef.current = 0;
+          setStabilityProgress(0);
+          setDetectedQuad(null);
+          setEdgeConfidence(0);
+          lastQuadRef.current = null;
+        }
       }
     }, 160);
 

@@ -67,8 +67,13 @@ export function computeQuadDelta(a: NormalizedQuad | null, b: NormalizedQuad | n
   ) / 8;
 }
 
+interface Pt {
+  x: number;
+  y: number;
+}
+
 interface Line2D {
-  // Normal form: a*x + b*y + c = 0
+  // Normal form: a*x + b*y + c = 0 (unit normal: a^2 + b^2 = 1)
   a: number;
   b: number;
   c: number;
@@ -76,14 +81,13 @@ interface Line2D {
 
 function fitLineRansac(
   pts: { x: number; y: number; weight: number }[],
-  inlierDist = 3.2
+  inlierDist = 2.8
 ): Line2D | null {
   if (pts.length < 4) return null;
   let bestScore = -1;
   let bestLine: Line2D | null = null;
 
-  // Deterministic pair sampling across sorted points (fast, zero randomness)
-  const step = Math.max(1, Math.floor(pts.length / 10));
+  const step = Math.max(1, Math.floor(pts.length / 12));
   for (let i = 0; i < pts.length; i += step) {
     for (let j = i + step; j < pts.length; j += step) {
       const p1 = pts[i];
@@ -111,7 +115,6 @@ function fitLineRansac(
 
   if (!bestLine) return null;
 
-  // Weighted least-squares refinement over inliers
   const inliers = pts.filter(
     (p) => Math.abs(bestLine!.a * p.x + bestLine!.b * p.y + bestLine!.c) <= inlierDist
   );
@@ -125,6 +128,7 @@ function fitLineRansac(
     mx += p.x * p.weight;
     my += p.y * p.weight;
   }
+  if (wSum <= 0) return bestLine;
   mx /= wSum;
   my /= wSum;
 
@@ -139,7 +143,6 @@ function fitLineRansac(
     sxy += p.weight * dx * dy;
   }
 
-  // Principal eigenvector of covariance gives line direction (vx, vy)
   const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
   const vx = Math.cos(theta);
   const vy = Math.sin(theta);
@@ -149,13 +152,584 @@ function fitLineRansac(
   return { a, b, c };
 }
 
-function intersectLines(l1: Line2D, l2: Line2D): { x: number; y: number } | null {
+function intersectLines(l1: Line2D, l2: Line2D): Pt | null {
   const det = l1.a * l2.b - l2.a * l1.b;
   if (Math.abs(det) < 1e-6) return null;
   return {
     x: (l1.b * l2.c - l2.b * l1.c) / det,
     y: (l2.a * l1.c - l1.a * l2.c) / det,
   };
+}
+
+/** Separable 1D morphological dilate (isMax=true) or erode (isMax=false) of radius r */
+function morph1D(
+  src: Float32Array,
+  w: number,
+  h: number,
+  r: number,
+  isMax: boolean
+): Float32Array {
+  const tmp = new Float32Array(w * h);
+  const dst = new Float32Array(w * h);
+
+  // Horizontal pass
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(w - 1, x + r);
+      let best = src[row + x0];
+      if (isMax) {
+        for (let k = x0 + 1; k <= x1; k++) {
+          if (src[row + k] > best) best = src[row + k];
+        }
+      } else {
+        for (let k = x0 + 1; k <= x1; k++) {
+          if (src[row + k] < best) best = src[row + k];
+        }
+      }
+      tmp[row + x] = best;
+    }
+  }
+
+  // Vertical pass
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - r);
+    const y1 = Math.min(h - 1, y + r);
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let best = tmp[y0 * w + x];
+      if (isMax) {
+        for (let k = y0 + 1; k <= y1; k++) {
+          const v = tmp[k * w + x];
+          if (v > best) best = v;
+        }
+      } else {
+        for (let k = y0 + 1; k <= y1; k++) {
+          const v = tmp[k * w + x];
+          if (v < best) best = v;
+        }
+      }
+      dst[row + x] = best;
+    }
+  }
+  return dst;
+}
+
+/** Morphological closing (dilate then erode): erases dark text/table lines on bright paper */
+function morphClose(src: Float32Array, w: number, h: number, r = 2): Float32Array {
+  return morph1D(morph1D(src, w, h, r, true), w, h, r, false);
+}
+
+function computeOtsuThreshold(values: Float32Array): number {
+  const hist = new Int32Array(256);
+  const n = values.length;
+  for (let i = 0; i < n; i++) {
+    const b = Math.max(0, Math.min(255, Math.round(values[i])));
+    hist[b]++;
+  }
+  let sumAll = 0;
+  for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+
+  let sumB = 0;
+  let wB = 0;
+  let maxVar = -1;
+  let bestT = 135;
+
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = n - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sumAll - sumB) / wF;
+    const diff = mB - mF;
+    const betweenVar = wB * wF * diff * diff;
+    if (betweenVar > maxVar) {
+      maxVar = betweenVar;
+      bestT = t;
+    }
+  }
+  return bestT;
+}
+
+function convexHull(points: Pt[]): Pt[] {
+  if (points.length <= 3) return points.slice();
+  const sorted = points.slice().sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y));
+  const cross = (o: Pt, a: Pt, b: Pt) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+  const lower: Pt[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+  const upper: Pt[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+/** Simplify convex polygon down to 4 corners by iteratively dropping smallest-area vertex */
+function simplifyHullToQuad(hull: Pt[]): [Pt, Pt, Pt, Pt] | null {
+  if (hull.length < 4) return null;
+  const poly = hull.slice();
+  while (poly.length > 4) {
+    let minArea = Infinity;
+    let minIdx = 0;
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const prev = poly[(i - 1 + n) % n];
+      const curr = poly[i];
+      const next = poly[(i + 1) % n];
+      const area = Math.abs(
+        (curr.x - prev.x) * (next.y - prev.y) - (next.x - prev.x) * (curr.y - prev.y)
+      );
+      if (area < minArea) {
+        minArea = area;
+        minIdx = i;
+      }
+    }
+    poly.splice(minIdx, 1);
+  }
+  return orderCorners([poly[0], poly[1], poly[2], poly[3]]);
+}
+
+function orderCorners(pts: [Pt, Pt, Pt, Pt]): [Pt, Pt, Pt, Pt] {
+  const byY = pts.slice().sort((a, b) => a.y - b.y);
+  const top = [byY[0], byY[1]].sort((a, b) => a.x - b.x);
+  const bot = [byY[2], byY[3]].sort((a, b) => a.x - b.x);
+  // [TL, TR, BR, BL]
+  return [top[0], top[1], bot[1], bot[0]];
+}
+
+function pointToSegmentDist(p: Pt, a: Pt, b: Pt): { dist: number; t: number } {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const len2 = vx * vx + vy * vy;
+  if (len2 < 1e-6) return { dist: Math.hypot(p.x - a.x, p.y - a.y), t: 0 };
+  const t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+  const tc = Math.max(0, Math.min(1, t));
+  const px = a.x + tc * vx;
+  const py = a.y + tc * vy;
+  return { dist: Math.hypot(p.x - px, p.y - py), t };
+}
+
+function detectQuadFromComponent(
+  closedWhite: Float32Array,
+  gradMag: Float32Array,
+  w: number,
+  h: number,
+  thresh: number
+): [Pt, Pt, Pt, Pt] | null {
+  const totalPx = w * h;
+  const visited = new Uint8Array(totalPx);
+  const queue = new Int32Array(totalPx);
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+
+  let bestScore = -1;
+  let bestPixels: number[] | null = null;
+
+  for (let start = 0; start < totalPx; start++) {
+    if (visited[start] || closedWhite[start] < thresh) continue;
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = start;
+    visited[start] = 1;
+    const comp: number[] = [];
+
+    let minX = w;
+    let maxX = 0;
+    let minY = h;
+    let maxY = 0;
+    let sumX = 0;
+    let sumY = 0;
+    let containsCenter = false;
+
+    while (head < tail) {
+      const idx = queue[head++];
+      comp.push(idx);
+      const x = idx % w;
+      const y = (idx - x) / w;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      sumX += x;
+      sumY += y;
+      if (Math.abs(x - cx) < w * 0.12 && Math.abs(y - cy) < h * 0.12) {
+        containsCenter = true;
+      }
+
+      if (x > 0 && !visited[idx - 1] && closedWhite[idx - 1] >= thresh) {
+        visited[idx - 1] = 1;
+        queue[tail++] = idx - 1;
+      }
+      if (x + 1 < w && !visited[idx + 1] && closedWhite[idx + 1] >= thresh) {
+        visited[idx + 1] = 1;
+        queue[tail++] = idx + 1;
+      }
+      if (y > 0 && !visited[idx - w] && closedWhite[idx - w] >= thresh) {
+        visited[idx - w] = 1;
+        queue[tail++] = idx - w;
+      }
+      if (y + 1 < h && !visited[idx + w] && closedWhite[idx + w] >= thresh) {
+        visited[idx + w] = 1;
+        queue[tail++] = idx + w;
+      }
+    }
+
+    const areaRatio = comp.length / totalPx;
+    if (areaRatio < 0.1 || areaRatio > 0.94) continue;
+
+    const bboxArea = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
+    const rectangularity = comp.length / bboxArea;
+    if (rectangularity < 0.45) continue;
+
+    const mx = sumX / comp.length;
+    const my = sumY / comp.length;
+    const centerDist = Math.hypot((mx - cx) / w, (my - cy) / h);
+    const centrality = (containsCenter ? 1.0 : 0.45) * Math.max(0.2, 1 - centerDist * 1.4);
+
+    const score = areaRatio * rectangularity * centrality;
+    if (score > bestScore) {
+      bestScore = score;
+      bestPixels = comp;
+    }
+  }
+
+  if (!bestPixels) return null;
+
+  // Build component mask to extract clean boundary pixels
+  const compMask = new Uint8Array(totalPx);
+  for (let i = 0; i < bestPixels.length; i++) compMask[bestPixels[i]] = 1;
+
+  const boundaryPts: Pt[] = [];
+  for (let i = 0; i < bestPixels.length; i++) {
+    const idx = bestPixels[i];
+    const x = idx % w;
+    const y = (idx - x) / w;
+    if (
+      x <= 1 ||
+      x >= w - 2 ||
+      y <= 1 ||
+      y >= h - 2 ||
+      !compMask[idx - 1] ||
+      !compMask[idx + 1] ||
+      !compMask[idx - w] ||
+      !compMask[idx + w]
+    ) {
+      boundaryPts.push({ x, y });
+    }
+  }
+  if (boundaryPts.length < 16) return null;
+
+  const hull = convexHull(boundaryPts);
+  const roughQuad = simplifyHullToQuad(hull);
+  if (!roughQuad) return null;
+
+  // Refine each of the 4 edges via weighted RANSAC on nearby boundary points
+  const edges: [Pt, Pt][] = [
+    [roughQuad[0], roughQuad[1]], // top
+    [roughQuad[1], roughQuad[2]], // right
+    [roughQuad[2], roughQuad[3]], // bottom
+    [roughQuad[3], roughQuad[0]], // left
+  ];
+
+  const fittedLines: (Line2D | null)[] = edges.map(([a, b]) => {
+    const nearPts: { x: number; y: number; weight: number }[] = [];
+    for (let i = 0; i < boundaryPts.length; i++) {
+      const p = boundaryPts[i];
+      const { dist, t } = pointToSegmentDist(p, a, b);
+      if (dist <= 5.5 && t >= 0.08 && t <= 0.92) {
+        const ix = Math.max(0, Math.min(w - 1, Math.round(p.x)));
+        const iy = Math.max(0, Math.min(h - 1, Math.round(p.y)));
+        nearPts.push({ x: p.x, y: p.y, weight: 1 + gradMag[iy * w + ix] * 0.08 });
+      }
+    }
+    return fitLineRansac(nearPts, 2.5);
+  });
+
+  if (fittedLines.some((l) => !l)) return roughQuad;
+
+  const pTL = intersectLines(fittedLines[0]!, fittedLines[3]!);
+  const pTR = intersectLines(fittedLines[0]!, fittedLines[1]!);
+  const pBR = intersectLines(fittedLines[2]!, fittedLines[1]!);
+  const pBL = intersectLines(fittedLines[2]!, fittedLines[3]!);
+  if (!pTL || !pTR || !pBR || !pBL) return roughQuad;
+
+  return orderCorners([pTL, pTR, pBR, pBL]);
+}
+
+function detectQuadFromClosedScanlines(
+  closedGray: Float32Array,
+  closedWhite: Float32Array,
+  w: number,
+  h: number
+): [Pt, Pt, Pt, Pt] | null {
+  const STRIPS = 30;
+  const stepProbe = 4;
+
+  const leftPts: { x: number; y: number; weight: number }[] = [];
+  const rightPts: { x: number; y: number; weight: number }[] = [];
+  const topPts: { x: number; y: number; weight: number }[] = [];
+  const bottomPts: { x: number; y: number; weight: number }[] = [];
+
+  const pushTopPeaks = (
+    candidates: { pos: number; score: number }[],
+    out: { x: number; y: number; weight: number }[],
+    isVerticalEdge: boolean,
+    fixedCoord: number
+  ) => {
+    candidates.sort((a, b) => b.score - a.score);
+    let added = 0;
+    let firstPos = -999;
+    for (const c of candidates) {
+      if (Math.abs(c.pos - firstPos) < 8) continue;
+      out.push(
+        isVerticalEdge
+          ? { x: c.pos, y: fixedCoord, weight: c.score }
+          : { x: fixedCoord, y: c.pos, weight: c.score }
+      );
+      if (added === 0) firstPos = c.pos;
+      added++;
+      if (added >= 2) break;
+    }
+  };
+
+  for (let s = 0; s < STRIPS; s++) {
+    const y = Math.round(h * (0.14 + (0.72 * s) / (STRIPS - 1)));
+    const row = y * w;
+
+    const lCands: { pos: number; score: number }[] = [];
+    for (let x = Math.max(stepProbe, Math.floor(w * 0.02)); x < Math.floor(w * 0.45); x++) {
+      const grad = closedGray[row + x + 2] - closedGray[row + x - 2];
+      if (grad <= 3) continue;
+      const outsideW = closedWhite[row + x - stepProbe];
+      const insideW = closedWhite[row + x + stepProbe];
+      const stepW = insideW - outsideW;
+      if (insideW > 105 && stepW > 4) {
+        lCands.push({ pos: x, score: grad * 1.2 + stepW * 1.4 });
+      }
+    }
+    pushTopPeaks(lCands, leftPts, true, y);
+
+    const rCands: { pos: number; score: number }[] = [];
+    for (let x = Math.min(w - stepProbe - 1, Math.floor(w * 0.98)); x > Math.floor(w * 0.55); x--) {
+      const grad = closedGray[row + x - 2] - closedGray[row + x + 2];
+      if (grad <= 3) continue;
+      const insideW = closedWhite[row + x - stepProbe];
+      const outsideW = closedWhite[row + x + stepProbe];
+      const stepW = insideW - outsideW;
+      if (insideW > 105 && stepW > 4) {
+        rCands.push({ pos: x, score: grad * 1.2 + stepW * 1.4 });
+      }
+    }
+    pushTopPeaks(rCands, rightPts, true, y);
+  }
+
+  for (let s = 0; s < STRIPS; s++) {
+    const x = Math.round(w * (0.16 + (0.68 * s) / (STRIPS - 1)));
+
+    const tCands: { pos: number; score: number }[] = [];
+    for (let y = Math.max(stepProbe, Math.floor(h * 0.02)); y < Math.floor(h * 0.45); y++) {
+      const grad = closedGray[(y + 2) * w + x] - closedGray[(y - 2) * w + x];
+      if (grad <= 3) continue;
+      const outsideW = closedWhite[(y - stepProbe) * w + x];
+      const insideW = closedWhite[(y + stepProbe) * w + x];
+      const stepW = insideW - outsideW;
+      if (insideW > 105 && stepW > 4) {
+        tCands.push({ pos: y, score: grad * 1.2 + stepW * 1.4 });
+      }
+    }
+    pushTopPeaks(tCands, topPts, false, x);
+
+    const bCands: { pos: number; score: number }[] = [];
+    for (let y = Math.min(h - stepProbe - 1, Math.floor(h * 0.98)); y > Math.floor(h * 0.55); y--) {
+      const grad = closedGray[(y - 2) * w + x] - closedGray[(y + 2) * w + x];
+      if (grad <= 3) continue;
+      const insideW = closedWhite[(y - stepProbe) * w + x];
+      const outsideW = closedWhite[(y + stepProbe) * w + x];
+      const stepW = insideW - outsideW;
+      if (insideW > 105 && stepW > 4) {
+        bCands.push({ pos: y, score: grad * 1.2 + stepW * 1.4 });
+      }
+    }
+    pushTopPeaks(bCands, bottomPts, false, x);
+  }
+
+  const lLeft = fitLineRansac(leftPts, 2.8);
+  const lRight = fitLineRansac(rightPts, 2.8);
+  const lTop = fitLineRansac(topPts, 2.8);
+  const lBottom = fitLineRansac(bottomPts, 2.8);
+  if (!lLeft || !lRight || !lTop || !lBottom) return null;
+
+  const pTL = intersectLines(lTop, lLeft);
+  const pTR = intersectLines(lTop, lRight);
+  const pBR = intersectLines(lBottom, lRight);
+  const pBL = intersectLines(lBottom, lLeft);
+  if (!pTL || !pTR || !pBR || !pBL) return null;
+
+  return orderCorners([pTL, pTR, pBR, pBL]);
+}
+
+/** Validate geometry + photometric edge alignment and return quality score in [0..1] (0 = invalid) */
+function scoreQuadCandidate(
+  corners: [Pt, Pt, Pt, Pt],
+  closedWhite: Float32Array,
+  gradMag: Float32Array,
+  w: number,
+  h: number
+): number {
+  const [tl, tr, br, bl] = corners;
+
+  // Reject corners wildly outside image bounds
+  for (const p of corners) {
+    if (p.x < -w * 0.08 || p.x > w * 1.08 || p.y < -h * 0.08 || p.y > h * 1.08) {
+      return 0;
+    }
+  }
+
+  // Must be strictly convex (consistent cross-product sign)
+  const pts = [tl, tr, br, bl];
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % 4];
+    const c = pts[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-3) return 0;
+    const s = cross > 0 ? 1 : -1;
+    if (sign === 0) sign = s;
+    else if (sign !== s) return 0;
+  }
+
+  // Polygon area ratio
+  const area =
+    0.5 *
+    Math.abs(
+      tl.x * tr.y -
+        tr.x * tl.y +
+        (tr.x * br.y - br.x * tr.y) +
+        (br.x * bl.y - bl.x * br.y) +
+        (bl.x * tl.y - tl.x * bl.y)
+    );
+  const areaRatio = area / (w * h);
+  if (areaRatio < 0.12 || areaRatio > 0.95) return 0;
+
+  // Interior corner angles must be plausible perspective rectangle angles [48 deg .. 132 deg]
+  let angleScoreSum = 0;
+  for (let i = 0; i < 4; i++) {
+    const prev = pts[(i + 3) % 4];
+    const curr = pts[i];
+    const next = pts[(i + 1) % 4];
+    const v1x = prev.x - curr.x;
+    const v1y = prev.y - curr.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+    const d1 = Math.hypot(v1x, v1y);
+    const d2 = Math.hypot(v2x, v2y);
+    if (d1 < w * 0.15 || d2 < h * 0.15) return 0;
+    const cosA = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (d1 * d2)));
+    const deg = (Math.acos(cosA) * 180) / Math.PI;
+    if (deg < 48 || deg > 132) return 0;
+    angleScoreSum += 1 - Math.abs(deg - 90) / 45;
+  }
+  const angleQuality = angleScoreSum / 4;
+
+  // Opposite side length consistency
+  const topW = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+  const botW = Math.hypot(br.x - bl.x, br.y - bl.y);
+  const leftH = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+  const rightH = Math.hypot(br.x - tr.x, br.y - tr.y);
+  const wRatio = Math.min(topW, botW) / Math.max(1, Math.max(topW, botW));
+  const hRatio = Math.min(leftH, rightH) / Math.max(1, Math.max(leftH, rightH));
+  if (wRatio < 0.56 || hRatio < 0.56) return 0;
+
+  // Photometric edge support & inside-vs-outside paper contrast along all 4 edges
+  const quadCx = (tl.x + tr.x + br.x + bl.x) * 0.25;
+  const quadCy = (tl.y + tr.y + br.y + bl.y) * 0.25;
+  const edgePairs: [Pt, Pt][] = [
+    [tl, tr],
+    [tr, br],
+    [br, bl],
+    [bl, tl],
+  ];
+
+  let strongEdges = 0;
+  let edgeSupportSum = 0;
+  const SAMPLES = 20;
+
+  for (const [a, b] of edgePairs) {
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const elen = Math.max(1, Math.hypot(ex, ey));
+    // Unit normal pointing inward toward quad center
+    let nx = -ey / elen;
+    let ny = ex / elen;
+    const midX = (a.x + b.x) * 0.5;
+    const midY = (a.y + b.y) * 0.5;
+    if (nx * (quadCx - midX) + ny * (quadCy - midY) < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    let edgeHits = 0;
+    let contrastSum = 0;
+    let validSamples = 0;
+
+    for (let s = 1; s < SAMPLES; s++) {
+      const t = s / SAMPLES;
+      const px = a.x + ex * t;
+      const py = a.y + ey * t;
+      const ix = Math.round(px);
+      const iy = Math.round(py);
+      if (ix < 2 || ix >= w - 2 || iy < 2 || iy >= h - 2) continue;
+      validSamples++;
+
+      // Max gradient within +/-2px along normal
+      let localMaxGrad = 0;
+      for (let d = -2; d <= 2; d++) {
+        const gx = Math.max(0, Math.min(w - 1, Math.round(px + nx * d)));
+        const gy = Math.max(0, Math.min(h - 1, Math.round(py + ny * d)));
+        const g = gradMag[gy * w + gx];
+        if (g > localMaxGrad) localMaxGrad = g;
+      }
+
+      const inX = Math.max(0, Math.min(w - 1, Math.round(px + nx * 5)));
+      const inY = Math.max(0, Math.min(h - 1, Math.round(py + ny * 5)));
+      const outX = Math.max(0, Math.min(w - 1, Math.round(px - nx * 5)));
+      const outY = Math.max(0, Math.min(h - 1, Math.round(py - ny * 5)));
+      const stepW = closedWhite[inY * w + inX] - closedWhite[outY * w + outX];
+
+      if (localMaxGrad > 9 || stepW > 5) edgeHits++;
+      if (stepW > 0) contrastSum += Math.min(40, stepW);
+    }
+
+    const hitRatio = validSamples > 0 ? edgeHits / validSamples : 0.4;
+    const meanContrast = validSamples > 0 ? contrastSum / validSamples : 0;
+    const edgeScore = hitRatio * 0.65 + Math.min(1, meanContrast / 18) * 0.35;
+    if (edgeScore >= 0.35) strongEdges++;
+    edgeSupportSum += edgeScore;
+  }
+
+  if (strongEdges < 3) return 0;
+  const edgeQuality = edgeSupportSum / 4;
+  if (edgeQuality < 0.32) return 0;
+
+  const shapeQuality = (angleQuality + wRatio + hRatio) / 3;
+  const areaBonus = Math.min(1, areaRatio / 0.55);
+  return Math.min(0.98, edgeQuality * 0.5 + shapeQuality * 0.35 + areaBonus * 0.15);
 }
 
 export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis {
@@ -182,182 +756,86 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
     rawGray[i] = lum;
-    whiteness[i] = lum - chroma * 0.85;
+    whiteness[i] = Math.max(0, lum - chroma * 0.75);
   }
 
-  // 2. 3x3 Gaussian blur to suppress sensor & paper-grain noise
-  const gray = new Float32Array(totalPx);
+  // 2. Morphological Closing (5x5): erases dark text, table lines & creases inside paper
+  const closedGray = morphClose(rawGray, width, height, 2);
+  const closedWhite = morphClose(whiteness, width, height, 2);
+
+  // 3. Sobel gradient magnitude on closedGray (only true region boundaries survive)
+  const gradMag = new Float32Array(totalPx);
   for (let y = 1; y < height - 1; y++) {
     const row = y * width;
     for (let x = 1; x < width - 1; x++) {
       const i = row + x;
-      gray[i] =
-        (rawGray[i - width - 1] +
-          2 * rawGray[i - width] +
-          rawGray[i - width + 1] +
-          2 * rawGray[i - 1] +
-          4 * rawGray[i] +
-          2 * rawGray[i + 1] +
-          rawGray[i + width - 1] +
-          2 * rawGray[i + width] +
-          rawGray[i + width + 1]) /
-        16;
+      const gx =
+        -closedGray[i - width - 1] +
+        closedGray[i - width + 1] -
+        2 * closedGray[i - 1] +
+        2 * closedGray[i + 1] -
+        closedGray[i + width - 1] +
+        closedGray[i + width + 1];
+      const gy =
+        -closedGray[i - width - 1] -
+        2 * closedGray[i - width] -
+        closedGray[i - width + 1] +
+        closedGray[i + width - 1] +
+        2 * closedGray[i + width] +
+        closedGray[i + width + 1];
+      gradMag[i] = (Math.abs(gx) + Math.abs(gy)) * 0.25;
     }
   }
 
-  const STRIPS = 28;
-  const stepProbe = 4;
+  // 4. Generate candidate quads from complementary pipelines
+  const otsu = computeOtsuThreshold(closedWhite);
+  const candidates: [Pt, Pt, Pt, Pt][] = [];
 
-  const leftPts: { x: number; y: number; weight: number }[] = [];
-  const rightPts: { x: number; y: number; weight: number }[] = [];
-  const topPts: { x: number; y: number; weight: number }[] = [];
-  const bottomPts: { x: number; y: number; weight: number }[] = [];
+  const c1 = detectQuadFromComponent(closedWhite, gradMag, width, height, otsu);
+  if (c1) candidates.push(c1);
 
-  // 3. Left & Right border scanlines (transition between outside desk <-> bright neutral paper)
-  for (let s = 0; s < STRIPS; s++) {
-    const y = Math.round(height * (0.16 + (0.68 * s) / (STRIPS - 1)));
-    const row = y * width;
+  const c2 = detectQuadFromComponent(
+    closedWhite,
+    gradMag,
+    width,
+    height,
+    Math.min(220, otsu + 12)
+  );
+  if (c2) candidates.push(c2);
 
-    // Left edge: scan from x = 3% to 44%
-    let bestLX = -1;
-    let bestLScore = 10;
-    for (let x = Math.max(stepProbe, Math.floor(width * 0.03)); x < Math.floor(width * 0.44); x++) {
-      const grad = gray[row + x + 2] - gray[row + x - 2];
-      if (grad <= 4) continue;
-      // Outside (left) must be darker/warmer than inside (right)
-      const outsideW = whiteness[row + x - stepProbe];
-      const insideW = whiteness[row + x + stepProbe];
-      const stepW = insideW - outsideW;
-      // Ensure inside looks like bright paper (> 125) and is a real boundary step
-      if (insideW > 115 && stepW > 6) {
-        const score = grad * 1.2 + stepW * 1.4;
-        if (score > bestLScore) {
-          bestLScore = score;
-          bestLX = x;
-        }
-      }
+  const c3 = detectQuadFromClosedScanlines(closedGray, closedWhite, width, height);
+  if (c3) candidates.push(c3);
+
+  let bestCorners: [Pt, Pt, Pt, Pt] | null = null;
+  let bestScore = 0;
+  for (const cand of candidates) {
+    const s = scoreQuadCandidate(cand, closedWhite, gradMag, width, height);
+    if (s > bestScore) {
+      bestScore = s;
+      bestCorners = cand;
     }
-    if (bestLX > 0) leftPts.push({ x: bestLX, y, weight: bestLScore });
-
-    // Right edge: scan from x = 97% down to 56%
-    let bestRX = -1;
-    let bestRScore = 10;
-    for (
-      let x = Math.min(width - stepProbe - 1, Math.floor(width * 0.97));
-      x > Math.floor(width * 0.56);
-      x--
-    ) {
-      const grad = gray[row + x - 2] - gray[row + x + 2];
-      if (grad <= 4) continue;
-      const insideW = whiteness[row + x - stepProbe];
-      const outsideW = whiteness[row + x + stepProbe];
-      const stepW = insideW - outsideW;
-      if (insideW > 115 && stepW > 6) {
-        const score = grad * 1.2 + stepW * 1.4;
-        if (score > bestRScore) {
-          bestRScore = score;
-          bestRX = x;
-        }
-      }
-    }
-    if (bestRX > 0) rightPts.push({ x: bestRX, y, weight: bestRScore });
   }
 
-  // 4. Top & Bottom border scanlines
-  for (let s = 0; s < STRIPS; s++) {
-    const x = Math.round(width * (0.18 + (0.64 * s) / (STRIPS - 1)));
-
-    // Top edge: scan from y = 3% to 44%
-    let bestTY = -1;
-    let bestTScore = 10;
-    for (
-      let y = Math.max(stepProbe, Math.floor(height * 0.03));
-      y < Math.floor(height * 0.44);
-      y++
-    ) {
-      const grad = gray[(y + 2) * width + x] - gray[(y - 2) * width + x];
-      if (grad <= 4) continue;
-      const outsideW = whiteness[(y - stepProbe) * width + x];
-      const insideW = whiteness[(y + stepProbe) * width + x];
-      const stepW = insideW - outsideW;
-      if (insideW > 115 && stepW > 6) {
-        const score = grad * 1.2 + stepW * 1.4;
-        if (score > bestTScore) {
-          bestTScore = score;
-          bestTY = y;
-        }
-      }
-    }
-    if (bestTY > 0) topPts.push({ x, y: bestTY, weight: bestTScore });
-
-    // Bottom edge: scan from y = 97% down to 56%
-    let bestBY = -1;
-    let bestBScore = 10;
-    for (
-      let y = Math.min(height - stepProbe - 1, Math.floor(height * 0.97));
-      y > Math.floor(height * 0.56);
-      y--
-    ) {
-      const grad = gray[(y - 2) * width + x] - gray[(y + 2) * width + x];
-      if (grad <= 4) continue;
-      const insideW = whiteness[(y - stepProbe) * width + x];
-      const outsideW = whiteness[(y + stepProbe) * width + x];
-      const stepW = insideW - outsideW;
-      if (insideW > 115 && stepW > 6) {
-        const score = grad * 1.2 + stepW * 1.4;
-        if (score > bestBScore) {
-          bestBScore = score;
-          bestBY = y;
-        }
-      }
-    }
-    if (bestBY > 0) bottomPts.push({ x, y: bestBY, weight: bestBScore });
-  }
-
-  // 5. RANSAC straight-line fit on each of the 4 paper borders
-  const lLeft = fitLineRansac(leftPts, 3.0);
-  const lRight = fitLineRansac(rightPts, 3.0);
-  const lTop = fitLineRansac(topPts, 3.0);
-  const lBottom = fitLineRansac(bottomPts, 3.0);
-
-  if (!lLeft || !lRight || !lTop || !lBottom) {
+  if (!bestCorners || bestScore < 0.44) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
-  const pTL = intersectLines(lTop, lLeft);
-  const pTR = intersectLines(lTop, lRight);
-  const pBR = intersectLines(lBottom, lRight);
-  const pBL = intersectLines(lBottom, lLeft);
-
-  if (!pTL || !pTR || !pBR || !pBL) {
-    return { quad: null, confidence: 0, fingerprint };
-  }
-
-  // Tiny 1% outward margin so edge text is never clipped
-  const pad = 0.01;
+  const [pTL, pTR, pBR, pBL] = bestCorners;
+  // Tiny 0.8% outward margin so edge text is never clipped
+  const pad = 0.008;
+  const clamp01 = (v: number) => Math.max(0.01, Math.min(0.99, v));
   const quad: NormalizedQuad = {
-    tlX: Math.max(0.01, Math.min(0.48, pTL.x / width - pad)),
-    tlY: Math.max(0.01, Math.min(0.48, pTL.y / height - pad)),
-    trX: Math.max(0.52, Math.min(0.99, pTR.x / width + pad)),
-    trY: Math.max(0.01, Math.min(0.48, pTR.y / height - pad)),
-    brX: Math.max(0.52, Math.min(0.99, pBR.x / width + pad)),
-    brY: Math.max(0.52, Math.min(0.99, pBR.y / height + pad)),
-    blX: Math.max(0.01, Math.min(0.48, pBL.x / width - pad)),
-    blY: Math.max(0.52, Math.min(0.99, pBL.y / height + pad)),
+    tlX: clamp01(pTL.x / width - pad),
+    tlY: clamp01(pTL.y / height - pad),
+    trX: clamp01(pTR.x / width + pad),
+    trY: clamp01(pTR.y / height - pad),
+    brX: clamp01(pBR.x / width + pad),
+    brY: clamp01(pBR.y / height + pad),
+    blX: clamp01(pBL.x / width - pad),
+    blY: clamp01(pBL.y / height + pad),
   };
 
-  const topW = quad.trX - quad.tlX;
-  const botW = quad.brX - quad.blX;
-  const leftH = quad.blY - quad.tlY;
-  const rightH = quad.brY - quad.trY;
-  if (topW < 0.25 || botW < 0.25 || leftH < 0.25 || rightH < 0.25) {
-    return { quad: null, confidence: 0, fingerprint };
-  }
-
-  const coverage =
-    (leftPts.length + rightPts.length + topPts.length + bottomPts.length) / (STRIPS * 4);
-  const confidence = Math.min(0.97, Math.max(0.6, coverage));
-  return { quad, confidence, fingerprint };
+  return { quad, confidence: bestScore, fingerprint };
 }
 
 export async function detectQuadFromImageUrl(imageUrl: string): Promise<NormalizedQuad> {
@@ -365,8 +843,11 @@ export async function detectQuadFromImageUrl(imageUrl: string): Promise<Normaliz
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      const targetW = 180;
-      const targetH = Math.max(60, Math.min(220, Math.round((img.naturalHeight / Math.max(1, img.naturalWidth)) * targetW)));
+      const targetW = 220;
+      const targetH = Math.max(
+        80,
+        Math.min(280, Math.round((img.naturalHeight / Math.max(1, img.naturalWidth)) * targetW))
+      );
       const canvas = document.createElement('canvas');
       canvas.width = targetW;
       canvas.height = targetH;
