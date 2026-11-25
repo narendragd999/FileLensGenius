@@ -769,8 +769,8 @@ function scoreQuadCandidate(
   let interiorHits = 0;
   let interiorDark = 0;
   let interiorTotal = 0;
-  const darkCutoff = Math.max(60, centerPaperRef - 36);
-  const paperCutoff = Math.max(85, centerPaperRef - 24);
+  const darkCutoff = Math.max(60, centerPaperRef - 28);
+  const paperCutoff = Math.max(85, centerPaperRef - 20);
   for (let gy = 1; gy <= 6; gy++) {
     const v = 0.08 + (0.84 * (gy - 1)) / 5;
     for (let gx = 1; gx <= 6; gx++) {
@@ -787,14 +787,14 @@ function scoreQuadCandidate(
       if (val < darkCutoff) interiorDark++;
     }
   }
-  if (interiorTotal > 0 && interiorDark / interiorTotal > 0.22) return 0;
+  if (interiorTotal > 0 && interiorDark / interiorTotal > 0.16) return 0;
   const interiorQuality = interiorTotal > 0 ? interiorHits / interiorTotal : 0.7;
 
   const shapeQuality = (angleQuality + wRatio + hRatio) / 3;
   const areaBonus = Math.min(1, areaRatio / 0.55);
   return Math.min(
     0.98,
-    edgeQuality * 0.42 + interiorQuality * 0.28 + shapeQuality * 0.20 + areaBonus * 0.10
+    edgeQuality * 0.44 + interiorQuality * 0.34 + shapeQuality * 0.18 + areaBonus * 0.04
   );
 }
 
@@ -942,6 +942,22 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     }
   }
 
+  // 2c. Preserve thin 1-3px dark contact-shadow valleys between white paper and bright desks
+  const segWhite = new Float32Array(closedWhite);
+  for (let y = 4; y < height - 4; y++) {
+    const row = y * width;
+    for (let x = 4; x < width - 4; x++) {
+      const i = row + x;
+      const g = rawGray[i];
+      const vDrop = Math.min(rawGray[i - 4 * width] - g, rawGray[i + 4 * width] - g);
+      const hDrop = Math.min(rawGray[i - 4] - g, rawGray[i + 4] - g);
+      const valley = Math.max(vDrop, hDrop);
+      if (valley > 9) {
+        segWhite[i] = Math.max(0, segWhite[i] - valley * 2.8);
+      }
+    }
+  }
+
   // 4. Generate candidate quads from Otsu + center-seeded paper thresholds (separates white paper from grey desks)
   const otsu = computeOtsuThreshold(closedWhite);
   const centerSamples: number[] = [];
@@ -971,7 +987,7 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
 
   const candidates: [Pt, Pt, Pt, Pt][] = [];
   for (const t of thresholds) {
-    const c = detectQuadFromComponent(closedWhite, gradMag, width, height, t);
+    const c = detectQuadFromComponent(segWhite, gradMag, width, height, t);
     if (c) candidates.push(c);
   }
   const normOtsu = computeOtsuThreshold(shadowNormWhite);
