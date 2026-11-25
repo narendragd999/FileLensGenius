@@ -187,7 +187,7 @@ export default function App() {
       type: classifyToastType(message),
       undoLabel: undo?.label,
       onUndo: undo?.action,
-      durationMs: undo ? 3800 : 2800,
+      durationMs: undo ? 3200 : 1800,
     });
   };
 
@@ -292,6 +292,11 @@ export default function App() {
         androidBatchQueueRef.current.length === 0
       ) {
         const st = androidStatsRef.current;
+        try {
+          localStorage.removeItem('fl_device_index_pending');
+        } catch {
+          // ignore storage errors
+        }
         setIsIndexing(false);
         setIndexProgress(null);
         indexAbortRef.current = null;
@@ -572,6 +577,11 @@ export default function App() {
           startMs: performance.now(),
           sourceLabel: 'Device & SD Card',
         };
+        try {
+          localStorage.setItem('fl_device_index_pending', '1');
+        } catch {
+          // ignore storage errors
+        }
         setIsIndexing(true);
         triggerAndroidNativeDeviceIndex(DEFAULT_DEVICE_INDEX_FILTERS);
         showToast('All Files Access granted · Indexing & OCRing device & SD card…');
@@ -584,6 +594,54 @@ export default function App() {
       document.removeEventListener('visibilitychange', onResumeCheck);
     };
   }, [runtime.hasNativeAndroidBridge]);
+
+  // Auto-resume indexing on app launch from remaining checkpoint if not all files are indexed
+  const launchAutoResumeCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!isVaultHydrated || launchAutoResumeCheckedRef.current) return;
+    launchAutoResumeCheckedRef.current = true;
+    if (!runtime.hasNativeAndroidBridge) return;
+    if (getAndroidAllFilesPermissionStatus() !== 'granted') return;
+
+    let hasCheckpoint = false;
+    try {
+      hasCheckpoint = localStorage.getItem('fl_device_index_pending') === '1';
+    } catch {
+      hasCheckpoint = false;
+    }
+    const hasPendingOcr = documentsRef.current.some((d) => d.ocrStatus === 'pending');
+    if (!hasCheckpoint && !hasPendingOcr && documentsRef.current.length > 0) return;
+
+    const timer = window.setTimeout(() => {
+      if (isDrainingAndroidQueueRef.current) return;
+      try {
+        localStorage.setItem('fl_device_index_pending', '1');
+      } catch {
+        // ignore storage errors
+      }
+      androidCrawlDoneRef.current = false;
+      androidBatchQueueRef.current = [];
+      androidStatsRef.current = {
+        newOrUpdated: 0,
+        skippedUnchanged: 0,
+        totalScanned: 0,
+        foldersScanned: 0,
+        startMs: performance.now(),
+        sourceLabel: 'Device & SD Card',
+      };
+      setIsIndexing(true);
+      setIndexProgress({
+        indexed: 0,
+        total: 0,
+        currentFile: 'Resuming from remaining checkpoint…',
+        phase: 'Discovering Device Folders',
+        skippedUnchanged: 0,
+        newOrUpdated: 0,
+      });
+      triggerAndroidNativeDeviceIndex(DEFAULT_DEVICE_INDEX_FILTERS);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [isVaultHydrated, runtime.hasNativeAndroidBridge]);
 
   const handleSyncAllDeviceRoots = async (filters: DeviceIndexFilters) => {
     const ready: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[] = [];
@@ -632,6 +690,11 @@ export default function App() {
           startMs: performance.now(),
           sourceLabel: 'Device & SD Card',
         };
+        try {
+          localStorage.setItem('fl_device_index_pending', '1');
+        } catch {
+          // ignore storage errors
+        }
         setIsIndexing(true);
         setIndexProgress({
           indexed: 0,

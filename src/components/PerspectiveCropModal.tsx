@@ -171,16 +171,7 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
     pushUndo();
     try {
       const detected = await detectQuadFromImageUrl(rawImageUrl);
-      const isFull =
-        detected.tlX <= 0.01 &&
-        detected.tlY <= 0.01 &&
-        detected.trX >= 0.99 &&
-        detected.brY >= 0.99;
-      setQuad(
-        isFull
-          ? { tlX: 0.04, tlY: 0.04, trX: 0.96, trY: 0.04, brX: 0.96, brY: 0.96, blX: 0.04, blY: 0.96 }
-          : detected
-      );
+      setQuad(isFullQuad(detected) ? FULL_QUAD : detected);
     } finally {
       setIsDetecting(false);
     }

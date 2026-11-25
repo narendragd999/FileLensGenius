@@ -627,7 +627,7 @@ function scoreQuadCandidate(
   const areaRatio = area / (w * h);
   if (areaRatio < 0.12 || areaRatio > 0.95) return 0;
 
-  // Interior corner angles must be plausible perspective rectangle angles [48 deg .. 132 deg]
+  // Interior corner angles must be plausible perspective rectangle angles [58 deg .. 122 deg]
   let angleScoreSum = 0;
   for (let i = 0; i < 4; i++) {
     const prev = pts[(i + 3) % 4];
@@ -639,22 +639,25 @@ function scoreQuadCandidate(
     const v2y = next.y - curr.y;
     const d1 = Math.hypot(v1x, v1y);
     const d2 = Math.hypot(v2x, v2y);
-    if (d1 < w * 0.15 || d2 < h * 0.15) return 0;
+    if (d1 < w * 0.18 || d2 < h * 0.18) return 0;
     const cosA = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (d1 * d2)));
     const deg = (Math.acos(cosA) * 180) / Math.PI;
-    if (deg < 48 || deg > 132) return 0;
-    angleScoreSum += 1 - Math.abs(deg - 90) / 45;
+    if (deg < 58 || deg > 122) return 0;
+    angleScoreSum += 1 - Math.abs(deg - 90) / 35;
   }
   const angleQuality = angleScoreSum / 4;
 
-  // Opposite side length consistency
+  // Opposite side length consistency & near-parallelism
   const topW = Math.hypot(tr.x - tl.x, tr.y - tl.y);
   const botW = Math.hypot(br.x - bl.x, br.y - bl.y);
   const leftH = Math.hypot(bl.x - tl.x, bl.y - tl.y);
   const rightH = Math.hypot(br.x - tr.x, br.y - tr.y);
   const wRatio = Math.min(topW, botW) / Math.max(1, Math.max(topW, botW));
   const hRatio = Math.min(leftH, rightH) / Math.max(1, Math.max(leftH, rightH));
-  if (wRatio < 0.56 || hRatio < 0.56) return 0;
+  if (wRatio < 0.68 || hRatio < 0.68) return 0;
+
+  // Reject small sub-cards/modals that skip the top third of a full-frame page
+  if (Math.min(tl.y, tr.y) > h * 0.34 && areaRatio < 0.48) return 0;
 
   // Photometric edge support & inside-vs-outside paper contrast along all 4 edges
   const quadCx = (tl.x + tr.x + br.x + bl.x) * 0.25;

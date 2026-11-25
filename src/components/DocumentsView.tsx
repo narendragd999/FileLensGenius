@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   Camera,
@@ -130,6 +130,36 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
       });
   }, [documents, selectedFolderId, selectedTag, filterQuery, sortBy]);
+
+  const PAGE_SIZE = 40;
+  const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [selectedFolderId, selectedTag, filterQuery, sortBy]);
+
+  const visibleDocs = useMemo(
+    () => filteredDocs.slice(0, visibleCount),
+    [filteredDocs, visibleCount]
+  );
+
+  const hasMoreDocs = visibleCount < filteredDocs.length;
+
+  useEffect(() => {
+    const el = loadMoreRef.current;
+    if (!el || !hasMoreDocs) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((prev) => Math.min(filteredDocs.length, prev + PAGE_SIZE));
+        }
+      },
+      { rootMargin: '400px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMoreDocs, filteredDocs.length]);
 
   const toggleSelectDoc = (id: string) => {
     setSelectedDocIds((prev) => {
@@ -487,7 +517,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         )
       ) : viewMode === 'list' ? (
         <div className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8 overflow-hidden">
-          {filteredDocs.map((doc) => {
+          {visibleDocs.map((doc) => {
             const isSelected = selectedDocIds.has(doc.id);
             const cover = doc.pages[0];
             return (
@@ -613,7 +643,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-3.5">
-          {filteredDocs.map((doc) => {
+          {visibleDocs.map((doc) => {
             const isSelected = selectedDocIds.has(doc.id);
             const cover = doc.pages[0];
             return (
@@ -691,6 +721,18 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {hasMoreDocs && (
+        <div ref={loadMoreRef} className="flex items-center justify-center py-3">
+          <button
+            type="button"
+            onClick={() => setVisibleCount((prev) => Math.min(filteredDocs.length, prev + PAGE_SIZE))}
+            className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-xs font-semibold text-slate-600 dark:text-slate-300 transition-colors"
+          >
+            Showing {visibleDocs.length} of {filteredDocs.length} · Load more
+          </button>
         </div>
       )}
 
