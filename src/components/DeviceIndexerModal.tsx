@@ -1,15 +1,18 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   Download,
   FileText,
+  FileUp,
   FolderOpen,
   HardDrive,
   Image as ImageIcon,
   Laptop,
   Loader2,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Trash2,
   X,
 } from 'lucide-react';
@@ -21,7 +24,14 @@ import {
   IndexProgress,
 } from '../types/filelens';
 import { formatShortDate } from '../utils/formatters';
-import { DEFAULT_DEVICE_INDEX_FILTERS } from '../utils/deviceRoots';
+import {
+  AndroidAllFilesPermissionStatus,
+  DEFAULT_DEVICE_INDEX_FILTERS,
+  detectDeviceRuntime,
+  getAndroidAllFilesPermissionStatus,
+  requestAndroidAllFilesAccess,
+  triggerAndroidNativeDeviceIndex,
+} from '../utils/deviceRoots';
 
 interface DeviceIndexerModalProps {
   deviceRoots: DeviceStorageRoot[];
@@ -41,37 +51,43 @@ interface DeviceIndexerModalProps {
   onSyncSingleRoot: (rootId: string, filters: DeviceIndexFilters) => void;
   onRemoveRoot: (rootId: string) => void;
   onCancelIndexing: () => void;
+  onToast: (message: string) => void;
   onClose: () => void;
 }
 
 const STORAGE_PRESETS: {
   id: DeviceRootPreset;
   label: string;
+  mobileLabel: string;
   subtitle: string;
   icon: React.ReactNode;
 }[] = [
   {
     id: 'documents',
     label: 'Documents',
-    subtitle: 'PDFs, contracts, bills',
+    mobileLabel: 'Documents',
+    subtitle: 'PDFs, Office, contracts',
     icon: <FileText className="w-4 h-4 text-orange-600 dark:text-orange-400" />,
   },
   {
     id: 'downloads',
     label: 'Downloads',
-    subtitle: 'Statements, invoices, forms',
+    mobileLabel: 'Downloads',
+    subtitle: 'Invoices, bills, ZIPs',
     icon: <Download className="w-4 h-4 text-orange-600 dark:text-orange-400" />,
   },
   {
     id: 'pictures',
     label: 'Pictures / DCIM',
-    subtitle: 'Camera scans, receipts, IDs',
+    mobileLabel: 'DCIM / Photos',
+    subtitle: 'Camera scans & OCR',
     icon: <ImageIcon className="w-4 h-4 text-orange-600 dark:text-orange-400" />,
   },
   {
     id: 'desktop',
     label: 'Desktop',
-    subtitle: 'Quick files & folders',
+    mobileLabel: 'All Storage',
+    subtitle: 'Internal & SD files',
     icon: <Laptop className="w-4 h-4 text-orange-600 dark:text-orange-400" />,
   },
 ];
@@ -87,28 +103,104 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
   onSyncSingleRoot,
   onRemoveRoot,
   onCancelIndexing,
+  onToast,
   onClose,
 }) => {
   const [filters, setFilters] = useState<DeviceIndexFilters>(DEFAULT_DEVICE_INDEX_FILTERS);
-  const [pendingFallbackPreset, setPendingFallbackPreset] = useState<string>('Device Storage');
+  const pendingSourceRef = useRef<string>('Device Storage');
   const fallbackDirInputRef = useRef<HTMLInputElement | null>(null);
+  const allFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const dirInputId = useId();
+  const filesInputId = useId();
 
-  const handlePresetClick = async (preset: DeviceRootPreset, label: string) => {
-    if (isIndexing) return;
-    const outcome = await onLinkAndIndexPreset(preset, filters);
-    if (outcome === 'fallback_needed') {
-      setPendingFallbackPreset(label);
-      fallbackDirInputRef.current?.click();
+  const runtime = useMemo(() => detectDeviceRuntime(), []);
+  const [androidPermStatus, setAndroidPermStatus] =
+    useState<AndroidAllFilesPermissionStatus>(() => getAndroidAllFilesPermissionStatus());
+
+  // Re-check Android MANAGE_EXTERNAL_STORAGE status whenever user returns from Android Settings
+  useEffect(() => {
+    const refreshPermission = () => {
+      setAndroidPermStatus(getAndroidAllFilesPermissionStatus());
+    };
+    window.addEventListener('focus', refreshPermission);
+    document.addEventListener('visibilitychange', refreshPermission);
+    return () => {
+      window.removeEventListener('focus', refreshPermission);
+      document.removeEventListener('visibilitychange', refreshPermission);
+    };
+  }, []);
+
+  const handleRequestAndroidPermission = () => {
+    const triggered = requestAndroidAllFilesAccess();
+    if (triggered) {
+      onToast('Opened Android All Files Access settings');
+    } else {
+      onToast('Select files from Android storage below');
+      allFilesInputRef.current?.click();
     }
   };
 
-  const handleFallbackFolderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleStartNativeAndroidCrawl = () => {
+    if (androidPermStatus !== 'granted') {
+      handleRequestAndroidPermission();
+      return;
+    }
+    const started = triggerAndroidNativeDeviceIndex(filters);
+    if (started) {
+      onToast('Started native Android full-storage indexing');
+    } else {
+      allFilesInputRef.current?.click();
+    }
+  };
+
+  /**
+   * Synchronous click handler — NEVER awaits before invoking a file/folder picker,
+   * preserving browser transient user activation on Android, iOS, desktop, and iframes.
+   */
+  const handlePresetClick = (preset: DeviceRootPreset, label: string) => {
+    if (isIndexing) return;
+    pendingSourceRef.current = label;
+
+    // 1. Desktop top-level with File System Access API -> persistent folder handle
+    if (runtime.canUseDirectoryPickerDirect) {
+      void onLinkAndIndexPreset(preset, filters).then((outcome) => {
+        if (outcome === 'fallback_needed') {
+          onToast('Use "Select Folder" or "Select Files" below to grant read access');
+        }
+      });
+      return;
+    }
+
+    // 2. Mobile (Android Chrome / WebView / iOS Safari) -> native multi-file storage picker
+    if (runtime.isMobile) {
+      allFilesInputRef.current?.click();
+      return;
+    }
+
+    // 3. Desktop inside iframe or Firefox/Safari -> synchronous webkitdirectory picker
+    fallbackDirInputRef.current?.click();
+  };
+
+  const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const list = e.target.files;
     if (list && list.length > 0) {
       const files = Array.from(list);
       const firstRel = (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath;
-      const rootName = firstRel ? firstRel.split('/')[0] : pendingFallbackPreset;
+      const rootName = firstRel ? firstRel.split('/')[0] : pendingSourceRef.current;
       onIndexFallbackFolderFiles(files, `Device: ${rootName}`, filters);
+    }
+    e.target.value = '';
+  };
+
+  const handleAllFilesInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const list = e.target.files;
+    if (list && list.length > 0) {
+      const files = Array.from(list);
+      onIndexFallbackFolderFiles(
+        files,
+        `${pendingSourceRef.current} (${files.length} files)`,
+        filters
+      );
     }
     e.target.value = '';
   };
@@ -124,20 +216,28 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Full Device Smart Indexing"
+      onClick={onClose}
     >
-      <div className="w-full sm:max-w-2xl max-h-[92vh] flex flex-col bg-[#F2F2F7] dark:bg-[#141416] text-slate-900 dark:text-slate-100 rounded-t-3xl sm:rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-2xl overflow-hidden">
-        {/* Top Sheet Header */}
-        <header className="px-5 py-4 bg-white dark:bg-[#1C1C1E] border-b border-slate-200/80 dark:border-white/10 flex items-center justify-between gap-3 shrink-0">
+      <div
+        className="w-full sm:max-w-2xl max-h-[92vh] flex flex-col bg-[#F2F2F7] dark:bg-[#141416] text-slate-900 dark:text-slate-100 rounded-t-3xl sm:rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Compact Top Sheet Header */}
+        <header className="px-4 py-3 bg-white dark:bg-[#1C1C1E] border-b border-slate-200/80 dark:border-white/10 flex items-center justify-between gap-2.5 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0">
-              <HardDrive className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-xl bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0">
+              {runtime.isAndroid ? (
+                <Smartphone className="w-4 h-4" />
+              ) : (
+                <HardDrive className="w-4 h-4" />
+              )}
             </div>
             <div className="min-w-0">
-              <h2 className="text-base font-bold tracking-tight truncate">
-                Index Entire Device (All File Types)
+              <h2 className="text-sm sm:text-base font-bold tracking-tight truncate">
+                Index Device Storage (All Files)
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                PDFs, Office, Photos (OCR), Code, Archives, Media &amp; any file on your device
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                PDFs, Photos (OCR), DOCX/XLSX/PPTX, Code, ZIP/APK &amp; any file
               </p>
             </div>
           </div>
@@ -145,61 +245,174 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close device indexer"
-            className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 shrink-0"
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 shrink-0"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </header>
 
         {/* Scrollable Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
-          {/* Primary Full Device Scan Card */}
-          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 sm:p-5 border border-slate-200/80 dark:border-white/10 space-y-3.5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                  {deviceRoots.length > 0
-                    ? `Sync Entire Device (${deviceRoots.length} linked root${deviceRoots.length > 1 ? 's' : ''})`
-                    : 'Index Everything on Your Device'}
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  Crawls every nested folder, runs real OCR on images &amp; scans, parses DOCX/XLSX/PPTX/PDF/ZIP/code, and indexes metadata for every other file type.
-                </p>
+        <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 space-y-3.5 sm:space-y-4">
+          {/* Android All Files Permission Card (shown on Android devices or native Android WebView bridge) */}
+          {(runtime.isAndroid || runtime.hasNativeAndroidBridge) && (
+            <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-3.5 border border-orange-200/80 dark:border-orange-900/50 space-y-2.5">
+              <div className="flex items-start justify-between gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
+                  {androidPermStatus === 'granted' ? (
+                    <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <ShieldAlert className="w-4 h-4 text-orange-600 dark:text-orange-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="min-w-0">
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                      {androidPermStatus === 'granted'
+                        ? 'Android All Files Access Granted'
+                        : androidPermStatus === 'required'
+                        ? 'Android All Files Access Required'
+                        : 'Android Storage Access'}
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                      {androidPermStatus === 'granted'
+                        ? 'MANAGE_EXTERNAL_STORAGE is active. Ready to crawl /storage/emulated/0.'
+                        : androidPermStatus === 'required'
+                        ? 'Allow "All files access" in Android Settings to automatically index every folder on your device.'
+                        : 'Tap below to select files from Internal Storage, Downloads, Documents, DCIM, or WhatsApp. Native Android APK builds unlock automatic All Files Access.'}
+                    </p>
+                  </div>
+                </div>
               </div>
+
+              {runtime.hasNativeAndroidBridge && (
+                <div className="flex flex-wrap gap-2">
+                  {androidPermStatus !== 'granted' ? (
+                    <button
+                      type="button"
+                      onClick={handleRequestAndroidPermission}
+                      className="h-9 px-3.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold flex items-center gap-1.5"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Grant All Files Access</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isIndexing}
+                      onClick={handleStartNativeAndroidCrawl}
+                      className="h-9 px-3.5 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
+                    >
+                      <HardDrive className="w-3.5 h-3.5" />
+                      <span>Crawl Entire Android Storage</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Primary Action Card — Uses native <label> bindings for guaranteed synchronous OS picker launch */}
+          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 dark:border-white/10 space-y-3">
+            <div>
+              <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                {deviceRoots.length > 0
+                  ? `Sync Linked Storage (${deviceRoots.length} root${deviceRoots.length > 1 ? 's' : ''})`
+                  : 'Select Device Files or Folder to Index'}
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                Runs on-device OCR on photos &amp; scanned PDFs, extracts text from Office/Code/ZIP, and indexes metadata for every other file type.
+              </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
               {deviceRoots.length > 0 && (
                 <button
                   type="button"
                   disabled={isIndexing}
                   onClick={() => onSyncAllDeviceRoots(filters)}
-                  className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap"
+                  className="h-10 px-3.5 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
                 >
-                  <RefreshCw className={`w-4 h-4 ${isIndexing ? 'animate-spin' : ''}`} />
-                  <span>Sync All Linked Storage</span>
+                  <RefreshCw className={`w-3.5 h-3.5 ${isIndexing ? 'animate-spin' : ''}`} />
+                  <span>Sync Linked ({deviceRoots.length})</span>
                 </button>
               )}
-              <button
-                type="button"
-                disabled={isIndexing}
-                onClick={() => handlePresetClick('custom', 'Entire Device / Drive')}
-                className={`min-h-[42px] px-4 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap disabled:opacity-50 ${
-                  deviceRoots.length === 0
-                    ? 'bg-orange-600 hover:bg-orange-700 text-white'
-                    : 'bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-slate-900 dark:text-white'
-                }`}
-              >
-                <FolderOpen className="w-4 h-4" />
-                <span>Select Drive / Home Folder</span>
-              </button>
+
+              {runtime.isMobile ? (
+                /* On Android/iOS browsers, <label htmlFor> synchronously opens Android's native multi-file storage picker every time */
+                <label
+                  htmlFor={isIndexing ? undefined : filesInputId}
+                  onPointerDown={() => {
+                    pendingSourceRef.current = 'Android Storage';
+                  }}
+                  className={`h-10 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer select-none ${
+                    isIndexing ? 'opacity-50 pointer-events-none' : ''
+                  }`}
+                >
+                  <FileUp className="w-4 h-4" />
+                  <span>Select Files from Storage</span>
+                </label>
+              ) : runtime.canUseDirectoryPickerDirect ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={isIndexing}
+                    onClick={() => handlePresetClick('custom', 'Device Folder')}
+                    className={`h-10 px-3.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap disabled:opacity-50 ${
+                      deviceRoots.length === 0
+                        ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                        : 'bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-slate-900 dark:text-white'
+                    }`}
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    <span>Link Drive / Folder</span>
+                  </button>
+                  <label
+                    htmlFor={isIndexing ? undefined : filesInputId}
+                    onPointerDown={() => {
+                      pendingSourceRef.current = 'Selected Files';
+                    }}
+                    className={`h-10 px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-slate-900 dark:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer select-none ${
+                      isIndexing ? 'opacity-50 pointer-events-none' : ''
+                    }`}
+                  >
+                    <FileUp className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                    <span>Select Any Files</span>
+                  </label>
+                </>
+              ) : (
+                /* Desktop iframe or Safari/Firefox: native <label> to webkitdirectory + multi-file input */
+                <>
+                  <label
+                    htmlFor={isIndexing ? undefined : dirInputId}
+                    onPointerDown={() => {
+                      pendingSourceRef.current = 'Device Folder';
+                    }}
+                    className={`h-10 px-3.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer select-none ${
+                      isIndexing ? 'opacity-50 pointer-events-none' : ''
+                    }`}
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    <span>Select Folder / Drive</span>
+                  </label>
+                  <label
+                    htmlFor={isIndexing ? undefined : filesInputId}
+                    onPointerDown={() => {
+                      pendingSourceRef.current = 'Selected Files';
+                    }}
+                    className={`h-10 px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-slate-900 dark:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer select-none ${
+                      isIndexing ? 'opacity-50 pointer-events-none' : ''
+                    }`}
+                  >
+                    <FileUp className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                    <span>Select Multiple Files</span>
+                  </label>
+                </>
+              )}
             </div>
 
             {/* Live Full-Device Crawl & Indexing Progress */}
             {isIndexing && progress && (
-              <div className="rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3.5 space-y-2 border border-orange-200/70 dark:border-orange-900/40">
+              <div className="rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3 space-y-2 border border-orange-200/70 dark:border-orange-900/40">
                 <div className="flex items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0">
                     <Loader2 className="w-3.5 h-3.5 text-orange-600 animate-spin shrink-0" />
                     <span className="font-semibold text-slate-800 dark:text-slate-100 shrink-0">
                       {progress.phase}
@@ -208,7 +421,7 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
                       {progress.currentFile}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <span className="font-mono tabular-nums font-semibold text-orange-600 dark:text-orange-400">
                       {progress.phase === 'Discovering Device Folders'
                         ? `${progress.foldersScanned ?? 0} dirs · ${progress.total} files`
@@ -224,7 +437,7 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
                     </button>
                   </div>
                 </div>
-                <div className="h-2 rounded-full bg-slate-200 dark:bg-black/40 overflow-hidden">
+                <div className="h-1.5 rounded-full bg-slate-200 dark:bg-black/40 overflow-hidden">
                   <div
                     className={`h-full bg-orange-600 transition-all duration-200 ${
                       progress.phase === 'Discovering Device Folders' ? 'animate-pulse' : ''
@@ -237,8 +450,8 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
                     }}
                   />
                 </div>
-                <div className="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                  <span>New/Updated: {progress.newOrUpdated}</span>
+                <div className="flex items-center gap-2.5 text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                  <span>Indexed: {progress.newOrUpdated}</span>
                   <span aria-hidden="true">·</span>
                   <span>Skipped unchanged: {progress.skippedUnchanged}</span>
                 </div>
@@ -246,9 +459,9 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
             )}
 
             {!isIndexing && lastSummary && (
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-white/8 text-xs text-slate-500 dark:text-slate-400">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-white/8 text-[11px] text-slate-500 dark:text-slate-400">
                 <span className="flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                   <span>
                     Last sync ({lastSummary.sourceLabel}):{' '}
                     <strong className="text-slate-800 dark:text-slate-200 font-mono tabular-nums">
@@ -264,7 +477,7 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
                     </span>
                   </span>
                 </span>
-                <span className="font-mono tabular-nums text-[11px]">
+                <span className="font-mono tabular-nums">
                   {formatShortDate(lastSummary.timestampIso)}
                 </span>
               </div>
@@ -272,34 +485,65 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
           </div>
 
           {/* Quick-Link Standard Device Storage Locations */}
-          <div className="space-y-2.5">
-            <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1">
-              Quick-Link Device Locations
+          <div className="space-y-2">
+            <h3 className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 px-1 uppercase tracking-wide">
+              Quick-Pick Storage Locations
             </h3>
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-2">
               {STORAGE_PRESETS.map((preset) => {
                 const alreadyLinked = deviceRoots.some((r) => r.preset === preset.id);
+                const labelText = runtime.isMobile ? preset.mobileLabel : preset.label;
+
+                // Use native <label> on mobile & desktop-iframe for guaranteed synchronous picker open
+                if (!runtime.canUseDirectoryPickerDirect) {
+                  const targetInputId = runtime.isMobile ? filesInputId : dirInputId;
+                  return (
+                    <label
+                      key={preset.id}
+                      htmlFor={isIndexing ? undefined : targetInputId}
+                      onPointerDown={() => {
+                        pendingSourceRef.current = labelText;
+                      }}
+                      className={`p-3 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 hover:border-orange-500/70 text-left transition-colors flex items-center gap-2.5 cursor-pointer select-none ${
+                        isIndexing ? 'opacity-50 pointer-events-none' : ''
+                      }`}
+                    >
+                      <div className="w-8 h-8 rounded-xl bg-orange-50 dark:bg-orange-950/40 flex items-center justify-center shrink-0">
+                        {preset.icon}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                          {labelText}
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {preset.subtitle}
+                        </p>
+                      </div>
+                    </label>
+                  );
+                }
+
                 return (
                   <button
                     key={preset.id}
                     type="button"
                     disabled={isIndexing}
-                    onClick={() => handlePresetClick(preset.id, preset.label)}
-                    className="p-3.5 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 hover:border-orange-500/70 text-left transition-colors disabled:opacity-50 flex items-start gap-3"
+                    onClick={() => handlePresetClick(preset.id, labelText)}
+                    className="p-3 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 hover:border-orange-500/70 text-left transition-colors disabled:opacity-50 flex items-center gap-2.5"
                   >
-                    <div className="w-9 h-9 rounded-xl bg-orange-50 dark:bg-orange-950/40 flex items-center justify-center shrink-0">
+                    <div className="w-8 h-8 rounded-xl bg-orange-50 dark:bg-orange-950/40 flex items-center justify-center shrink-0">
                       {preset.icon}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                          {preset.label}
+                          {labelText}
                         </span>
                         {alreadyLinked && (
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                         {alreadyLinked ? 'Linked · Click to re-link' : preset.subtitle}
                       </p>
                     </div>
@@ -311,15 +555,15 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
 
           {/* Persistent Linked Device Roots List */}
           {deviceRoots.length > 0 && (
-            <div className="space-y-2.5">
-              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-1">
+            <div className="space-y-2">
+              <h3 className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 px-1 uppercase tracking-wide">
                 Linked Device Storage Roots ({deviceRoots.length})
               </h3>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8">
                 {deviceRoots.map((root) => (
                   <div
                     key={root.id}
-                    className="p-3.5 flex items-center justify-between gap-3"
+                    className="p-3 flex items-center justify-between gap-2.5"
                   >
                     <div className="min-w-0">
                       <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
@@ -335,9 +579,9 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
                         type="button"
                         disabled={isIndexing}
                         onClick={() => onSyncSingleRoot(root.id, filters)}
-                        className="min-h-[34px] px-3 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 hover:text-orange-600 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+                        className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 hover:text-orange-600 text-xs font-semibold flex items-center gap-1 disabled:opacity-40"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />
+                        <RefreshCw className="w-3 h-3" />
                         <span>Sync</span>
                       </button>
                       <button
@@ -357,10 +601,10 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
           )}
 
           {/* Universal Device File Scope */}
-          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-slate-200/80 dark:border-white/10 space-y-3">
+          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-3.5 border border-slate-200/80 dark:border-white/10 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-xs font-bold text-slate-800 dark:text-slate-100">
-                File Types to Index (Everything Enabled)
+                File Types to Index
               </h3>
               <select
                 value={filters.maxFilesPerRun}
@@ -368,111 +612,122 @@ export const DeviceIndexerModal: React.FC<DeviceIndexerModalProps> = ({
                   setFilters((f) => ({ ...f, maxFilesPerRun: Number(e.target.value) }))
                 }
                 aria-label="Maximum files per indexing run"
-                className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] text-[11px] font-mono font-semibold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                className="h-7 px-2 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] text-[11px] font-mono font-semibold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
               >
-                <option value={200}>Up to 200 files / run</option>
-                <option value={500}>Up to 500 files / run</option>
-                <option value={2000}>Up to 2,000 files / run</option>
+                <option value={200}>Up to 200 files</option>
+                <option value={500}>Up to 500 files</option>
+                <option value={2000}>Up to 2,000 files</option>
               </select>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-              <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={filters.includePdf}
                   onChange={(e) => setFilters((f) => ({ ...f, includePdf: e.target.checked }))}
-                  className="accent-orange-600 w-4 h-4 rounded"
+                  className="accent-orange-600 w-3.5 h-3.5 rounded"
                 />
                 <span className="font-medium">PDFs (Text + Scanned OCR)</span>
               </label>
-              <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={filters.includeImages}
                   onChange={(e) => setFilters((f) => ({ ...f, includeImages: e.target.checked }))}
-                  className="accent-orange-600 w-4 h-4 rounded"
+                  className="accent-orange-600 w-3.5 h-3.5 rounded"
                 />
-                <span className="font-medium">All Images &amp; Photos (OCR)</span>
+                <span className="font-medium">Images &amp; Photos (OCR)</span>
               </label>
-              <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={filters.includeOfficeDocs}
                   onChange={(e) =>
                     setFilters((f) => ({ ...f, includeOfficeDocs: e.target.checked }))
                   }
-                  className="accent-orange-600 w-4 h-4 rounded"
+                  className="accent-orange-600 w-3.5 h-3.5 rounded"
                 />
-                <span className="font-medium">Office (DOCX, XLSX, PPTX, EPUB, RTF)</span>
+                <span className="font-medium">Office (DOCX, XLSX, PPTX, RTF)</span>
               </label>
-              <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={filters.includeTextDocs}
                   onChange={(e) =>
                     setFilters((f) => ({ ...f, includeTextDocs: e.target.checked }))
                   }
-                  className="accent-orange-600 w-4 h-4 rounded"
+                  className="accent-orange-600 w-3.5 h-3.5 rounded"
                 />
-                <span className="font-medium">Text, Code, CSV, JSON, EML, ICS</span>
+                <span className="font-medium">Text, Code, CSV, JSON, EML</span>
               </label>
-              <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={filters.includeMediaAndArchives}
                   onChange={(e) =>
                     setFilters((f) => ({ ...f, includeMediaAndArchives: e.target.checked }))
                   }
-                  className="accent-orange-600 w-4 h-4 rounded"
+                  className="accent-orange-600 w-3.5 h-3.5 rounded"
                 />
-                <span className="font-medium">Audio, Video &amp; ZIP/APK Archives</span>
+                <span className="font-medium">Audio, Video &amp; ZIP/APK</span>
               </label>
-              <label className="flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={filters.includeAllOtherFiles}
                   onChange={(e) =>
                     setFilters((f) => ({ ...f, includeAllOtherFiles: e.target.checked }))
                   }
-                  className="accent-orange-600 w-4 h-4 rounded"
+                  className="accent-orange-600 w-3.5 h-3.5 rounded"
                 />
                 <span className="font-medium">All Other Device Files (*.*)</span>
               </label>
             </div>
 
-            <label className="flex items-center gap-2.5 pt-1 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+            <label className="flex items-center gap-2 pt-0.5 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
                 checked={filters.skipSystemFolders}
                 onChange={(e) =>
                   setFilters((f) => ({ ...f, skipSystemFolders: e.target.checked }))
                 }
-                className="accent-orange-600 w-4 h-4 rounded"
+                className="accent-orange-600 w-3.5 h-3.5 rounded"
               />
               <span>Skip hidden system &amp; build cache folders (.git, node_modules, caches)</span>
             </label>
           </div>
 
           {/* 100% On-Device Privacy Note */}
-          <div className="flex items-start gap-2.5 px-1 text-[11px] text-slate-500 dark:text-slate-400">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-            <p className="leading-relaxed">
-              100% local on-device indexing. Files never leave your device. Browser privacy requires selecting your Home/Drive or standard folders once to grant read access across nested directories.
+          <div className="flex items-start gap-2 px-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+            <p className="leading-snug">
+              100% private on-device indexing. All OCR, text parsing, and semantic vectors stay locally in your IndexedDB vault.
             </p>
           </div>
         </div>
 
-        {/* Hidden OS Recursive Directory Fallback Input */}
+        {/* Native OS Recursive Folder Input (for desktop/iframe) */}
         <input
+          id={dirInputId}
           ref={fallbackDirInputRef}
           type="file"
           multiple
-          // @ts-expect-error webkitdirectory enables recursive OS folder selection in browsers without File System Access
+          // @ts-expect-error webkitdirectory enables recursive OS folder selection on desktop browsers
           webkitdirectory=""
           directory=""
-          className="hidden"
-          onChange={handleFallbackFolderChange}
+          className="sr-only"
+          onChange={handleFolderInputChange}
+        />
+
+        {/* Native Universal Multi-File Input (guaranteed to open Android / iOS / Desktop storage picker) */}
+        <input
+          id={filesInputId}
+          ref={allFilesInputRef}
+          type="file"
+          multiple
+          className="sr-only"
+          onChange={handleAllFilesInputChange}
         />
       </div>
     </div>

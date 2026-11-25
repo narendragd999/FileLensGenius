@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import {
   Bookmark,
   Camera,
@@ -9,6 +9,7 @@ import {
   Folder,
   FolderPlus,
   Grid2X2,
+  HardDrive,
   IdCard,
   Layers,
   List,
@@ -89,6 +90,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [sortBy, setSortBy] = useState<SortKey>('updated');
   const [filterQuery, setFilterQuery] = useState<string>('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [showTags, setShowTags] = useState<boolean>(false);
   const [selectMode, setSelectMode] = useState<boolean>(false);
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   const [showNewFolderModal, setShowNewFolderModal] = useState<boolean>(false);
@@ -96,7 +98,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [actionSheetDoc, setActionSheetDoc] = useState<ScanDocument | null>(null);
   const [renameValue, setRenameValue] = useState<string>('');
   const [showMoveFolderModal, setShowMoveFolderModal] = useState<boolean>(false);
-  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const importInputId = useId();
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -164,61 +166,239 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   }, [folders]);
 
   return (
-    <div className="space-y-5">
-      {/* Header Row: iOS Large Title + Quick Scan Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
+    <div className="space-y-2 sm:space-y-3">
+      {/* Desktop-only compact title row (hidden on small mobile screens to maximize document list space) */}
+      <div className="hidden sm:flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-2.5">
+          <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
             Documents
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5 font-mono tabular-nums">
-            {filteredDocs.length} {filteredDocs.length === 1 ? 'document' : 'documents'} ·{' '}
-            {documents.reduce((acc, d) => acc + d.pages.length, 0)} total pages
-          </p>
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+            {filteredDocs.length} files · {documents.reduce((acc, d) => acc + d.pages.length, 0)}p
+          </span>
         </div>
-
-        {/* Primary Capture & Smart Index Strip */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => onOpenScanner('batch')}
-            className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold flex items-center gap-2 transition-colors whitespace-nowrap"
+            className="h-9 px-3.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
           >
-            <Camera className="w-4 h-4" />
+            <Camera className="w-3.5 h-3.5" />
             <span>Live Scan</span>
           </button>
           <button
             type="button"
             onClick={() => onOpenScanner('idcard')}
-            className="min-h-[42px] px-3.5 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-slate-800 dark:text-slate-100 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            className="h-9 px-3 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-slate-800 dark:text-slate-100 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
           >
-            <IdCard className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+            <IdCard className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
             <span>2-in-1 ID</span>
           </button>
-          <button
-            type="button"
-            onClick={() => importInputRef.current?.click()}
-            className="min-h-[42px] px-3.5 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-slate-800 dark:text-slate-100 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+          <label
+            htmlFor={importInputId}
+            className="h-9 px-3 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-slate-800 dark:text-slate-100 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer select-none"
           >
-            <Upload className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+            <Upload className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
             <span>Import Any File</span>
-          </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files && e.target.files.length > 0) {
-                onIndexFiles(Array.from(e.target.files), `Imported (${e.target.files.length} files)`);
-                e.target.value = '';
-              }
-            }}
-          />
+          </label>
         </div>
       </div>
 
-      {/* Compact Universal Smart Indexing Panel directly on Documents Home */}
+      {/* Native Universal Import Input (sr-only for guaranteed Android/iOS label trigger) */}
+      <input
+        id={importInputId}
+        type="file"
+        multiple
+        className="sr-only"
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            onIndexFiles(Array.from(e.target.files), `Imported (${e.target.files.length} files)`);
+            e.target.value = '';
+          }
+        }}
+      />
+
+      {/* Row 1: Compact Instant Search + Inline Utility Buttons */}
+      <div className="flex items-center gap-1.5">
+        <div className="relative flex-1 min-w-0">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="Search files, OCR text, tags…"
+            className="w-full h-9 pl-8 pr-7 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+          />
+          {filterQuery && (
+            <button
+              type="button"
+              onClick={() => setFilterQuery('')}
+              aria-label="Clear filter"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Mobile quick ID & Import icons */}
+        <button
+          type="button"
+          onClick={() => onOpenScanner('idcard')}
+          title="Scan 2-in-1 ID Card"
+          aria-label="Scan 2-in-1 ID Card"
+          className="sm:hidden h-9 w-9 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 flex items-center justify-center text-orange-600 dark:text-orange-400 shrink-0"
+        >
+          <IdCard className="w-4 h-4" />
+        </button>
+        <label
+          htmlFor={importInputId}
+          title="Import any file"
+          aria-label="Import any file"
+          className="sm:hidden h-9 w-9 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 flex items-center justify-center text-orange-600 dark:text-orange-400 shrink-0 cursor-pointer"
+        >
+          <Upload className="w-4 h-4" />
+        </label>
+
+        <button
+          type="button"
+          onClick={() => setViewMode((v) => (v === 'list' ? 'grid' : 'list'))}
+          title={viewMode === 'list' ? 'Switch to Grid View' : 'Switch to List View'}
+          aria-label={viewMode === 'list' ? 'Switch to Grid View' : 'Switch to List View'}
+          className="h-9 w-9 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 flex items-center justify-center text-slate-600 dark:text-slate-300 shrink-0"
+        >
+          {viewMode === 'list' ? <Grid2X2 className="w-4 h-4" /> : <List className="w-4 h-4" />}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectMode((v) => !v);
+            setSelectedDocIds(new Set());
+          }}
+          className={`h-9 px-2.5 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
+            selectMode
+              ? 'bg-orange-600 text-white'
+              : 'bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-slate-700 dark:text-slate-200'
+          }`}
+        >
+          <CheckSquare className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">{selectMode ? 'Done' : 'Select'}</span>
+        </button>
+      </div>
+
+      {/* Row 2: Ultra-Compact Single-Line Folder Rail + Sort + Optional Tags Toggle */}
+      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+        <button
+          type="button"
+          onClick={() => onSelectFolder('all')}
+          className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 ${
+            selectedFolderId === 'all'
+              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+              : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-white/10'
+          }`}
+        >
+          All ({documents.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectFolder('bookmarked')}
+          className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 ${
+            selectedFolderId === 'bookmarked'
+              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+              : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-white/10'
+          }`}
+        >
+          <Bookmark className="w-3 h-3" />
+          <span>Starred</span>
+        </button>
+        {folders.map((folder) => (
+          <button
+            key={folder.id}
+            type="button"
+            onClick={() => onSelectFolder(folder.id)}
+            className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 ${
+              selectedFolderId === folder.id
+                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-white/10'
+            }`}
+          >
+            <Folder className="w-3 h-3 opacity-70" />
+            <span>{folder.name}</span>
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setShowNewFolderModal(true)}
+          title="Create new folder"
+          className="h-7 px-2 rounded-lg text-[11px] font-semibold text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/30 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1"
+        >
+          <FolderPlus className="w-3 h-3" />
+          <span>New</span>
+        </button>
+
+        {allTags.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowTags((v) => !v)}
+            className={`h-7 px-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              showTags || selectedTag
+                ? 'bg-orange-600/15 text-orange-700 dark:text-orange-300'
+                : 'bg-white dark:bg-[#1C1C1E] text-slate-500 dark:text-slate-400 border border-slate-200/80 dark:border-white/10'
+            }`}
+          >
+            {selectedTag ? `#${selectedTag}` : `#Tags (${allTags.length})`}
+          </button>
+        )}
+
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as SortKey)}
+          aria-label="Sort documents"
+          className="h-7 px-2 rounded-lg bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-[11px] font-semibold text-slate-600 dark:text-slate-300 focus:outline-none shrink-0"
+        >
+          <option value="updated">Newest</option>
+          <option value="title">A–Z</option>
+          <option value="pages">Pages</option>
+          <option value="size">Size</option>
+        </select>
+      </div>
+
+      {/* Optional Expandable Tag Rail (hidden by default to save mobile screen space!) */}
+      {(showTags || selectedTag) && allTags.length > 0 && (
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedTag(null);
+              setShowTags(false);
+            }}
+            className={`h-6 px-2 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 ${
+              selectedTag === null
+                ? 'bg-orange-600/12 text-orange-700 dark:text-orange-300 font-semibold'
+                : 'text-slate-500 dark:text-slate-400'
+            }`}
+          >
+            All
+          </button>
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
+              className={`h-6 px-2 rounded-md text-[11px] font-medium whitespace-nowrap shrink-0 ${
+                selectedTag === tag
+                  ? 'bg-orange-600/12 text-orange-700 dark:text-orange-300 font-semibold'
+                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-white/10'
+              }`}
+            >
+              #{tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Row 3: Ultra-Compact Single-Line Smart Indexing Bar (~36px) */}
       <SmartIndexingBar
         compact
         stats={indexStats}
@@ -232,197 +412,36 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         onCancelIndexing={onCancelIndexing}
       />
 
-      {/* Folder Rail */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-        <button
-          type="button"
-          onClick={() => onSelectFolder('all')}
-          className={`min-h-[38px] px-3.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
-            selectedFolderId === 'all'
-              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-              : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-white/10'
-          }`}
-        >
-          All Scans
-        </button>
-        <button
-          type="button"
-          onClick={() => onSelectFolder('bookmarked')}
-          className={`min-h-[38px] px-3.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-            selectedFolderId === 'bookmarked'
-              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-              : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-white/10'
-          }`}
-        >
-          <Bookmark className="w-3.5 h-3.5" />
-          <span>Starred</span>
-        </button>
-        {folders.map((folder) => (
-          <button
-            key={folder.id}
-            type="button"
-            onClick={() => onSelectFolder(folder.id)}
-            className={`min-h-[38px] px-3.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-              selectedFolderId === folder.id
-                ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
-                : 'bg-white dark:bg-[#1C1C1E] text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-white/10'
-            }`}
-          >
-            <Folder className="w-3.5 h-3.5 opacity-75" />
-            <span>{folder.name}</span>
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={() => setShowNewFolderModal(true)}
-          className="min-h-[38px] px-3 rounded-xl text-xs font-semibold text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/30 hover:bg-orange-100 dark:hover:bg-orange-950/50 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1"
-        >
-          <FolderPlus className="w-3.5 h-3.5" />
-          <span>New Folder</span>
-        </button>
-      </div>
-
-      {/* Search, Sort, View & Multi-Select Toolbar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
-            placeholder="Filter documents by title, tag, or indexed OCR text…"
-            className="w-full h-11 pl-10 pr-9 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-          />
-          {filterQuery && (
-            <button
-              type="button"
-              onClick={() => setFilterQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as SortKey)}
-            aria-label="Sort documents"
-            className="h-11 px-3 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-xs font-semibold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-orange-500"
-          >
-            <option value="updated">Newest First</option>
-            <option value="title">Name (A–Z)</option>
-            <option value="pages">Most Pages</option>
-            <option value="size">Largest File</option>
-          </select>
-
-          <div className="flex items-center p-1 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10">
-            <button
-              type="button"
-              onClick={() => setViewMode('list')}
-              aria-label="List view"
-              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-                viewMode === 'list'
-                  ? 'bg-slate-100 dark:bg-[#2C2C2E] text-orange-600 dark:text-orange-400'
-                  : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <List className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('grid')}
-              aria-label="Grid view"
-              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-                viewMode === 'grid'
-                  ? 'bg-slate-100 dark:bg-[#2C2C2E] text-orange-600 dark:text-orange-400'
-                  : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Grid2X2 className="w-4 h-4" />
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSelectMode((v) => !v);
-              setSelectedDocIds(new Set());
-            }}
-            className={`h-11 px-3.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap ${
-              selectMode
-                ? 'bg-orange-600 text-white'
-                : 'bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 text-slate-700 dark:text-slate-200'
-            }`}
-          >
-            <CheckSquare className="w-4 h-4" />
-            <span>{selectMode ? 'Done' : 'Select'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Interactive Tag Filter Controls */}
-      {allTags.length > 0 && (
-        <div className="flex items-center gap-1.5 overflow-x-auto">
-          <button
-            type="button"
-            onClick={() => setSelectedTag(null)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-              selectedTag === null
-                ? 'bg-orange-600/12 text-orange-700 dark:text-orange-300 font-semibold'
-                : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-white/10'
-            }`}
-          >
-            All Tags
-          </button>
-          {allTags.map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                selectedTag === tag
-                  ? 'bg-orange-600/12 text-orange-700 dark:text-orange-300 font-semibold'
-                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-white/10'
-              }`}
-            >
-              #{tag}
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* Batch Multi-Select Action Bar */}
       {selectMode && (
-        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-3 border border-orange-200 dark:border-orange-900/60 flex items-center justify-between gap-3 flex-wrap">
+        <div className="bg-white dark:bg-[#1C1C1E] rounded-xl px-3 py-2 border border-orange-200 dark:border-orange-900/60 flex items-center justify-between gap-2 flex-wrap">
           <span className="text-xs font-semibold text-orange-700 dark:text-orange-300">
             {selectedDocIds.size} selected
           </span>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
               disabled={selectedDocIds.size < 2}
               onClick={handleBatchMerge}
-              className="min-h-[36px] px-3 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1.5"
+              className="h-8 px-2.5 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-40 text-white text-xs font-semibold flex items-center gap-1"
             >
               <FilePlus2 className="w-3.5 h-3.5" />
-              <span>Merge PDFs</span>
+              <span>Merge</span>
             </button>
             <button
               type="button"
               disabled={selectedDocIds.size === 0}
               onClick={() => setShowMoveFolderModal(true)}
-              className="min-h-[36px] px-3 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] disabled:opacity-40 text-xs font-semibold flex items-center gap-1.5"
+              className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-[#2C2C2E] disabled:opacity-40 text-xs font-semibold flex items-center gap-1"
             >
               <Folder className="w-3.5 h-3.5" />
-              <span>Move Folder</span>
+              <span>Move</span>
             </button>
             <button
               type="button"
               disabled={selectedDocIds.size === 0}
               onClick={handleBatchDelete}
-              className="min-h-[36px] px-3 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 disabled:opacity-40 text-xs font-semibold flex items-center gap-1.5"
+              className="h-8 px-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 disabled:opacity-40 text-xs font-semibold flex items-center gap-1"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Delete</span>
@@ -433,23 +452,53 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
 
       {/* Documents List / Grid */}
       {filteredDocs.length === 0 ? (
-        <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl border border-slate-200/80 dark:border-white/10 p-10 text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 flex items-center justify-center mx-auto">
-            <Camera className="w-6 h-6" />
+        documents.length === 0 ? (
+          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-6 sm:p-8 text-center space-y-3">
+            <div className="w-11 h-11 rounded-2xl bg-orange-50 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 flex items-center justify-center mx-auto">
+              <HardDrive className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+                Your Local Vault is Empty
+              </h3>
+              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                Index any file from your device storage (PDF, Office, Photos with OCR, Code, ZIP, Media) or scan directly with your camera.
+              </p>
+            </div>
+            <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={onOpenDeviceIndexer}
+                className="h-10 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5"
+              >
+                <HardDrive className="w-4 h-4" />
+                <span>Index Device Files</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenScanner('batch')}
+                className="h-10 px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5"
+              >
+                <Camera className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                <span>Live Scan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenScanner('idcard')}
+                className="h-10 px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 dark:hover:bg-white/15 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5"
+              >
+                <IdCard className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                <span>2-in-1 ID</span>
+              </button>
+            </div>
           </div>
-          <h3 className="text-base font-bold">No matching scans found</h3>
-          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-            Capture a crisp multi-page PDF with live edge detection, index a local folder, or reset your current filters.
-          </p>
-          <div className="pt-2 flex items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => onOpenScanner('batch')}
-              className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold"
-            >
-              Start Scanning
-            </button>
-            {(filterQuery || selectedTag || selectedFolderId !== 'all') && (
+        ) : (
+          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-6 sm:p-8 text-center space-y-2.5">
+            <h3 className="text-sm sm:text-base font-bold">No matching files</h3>
+            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+              Try a different keyword or reset your folder and tag filters.
+            </p>
+            <div className="pt-1 flex items-center justify-center gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -457,15 +506,15 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   setSelectedTag(null);
                   onSelectFolder('all');
                 }}
-                className="min-h-[42px] px-4 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] text-sm font-semibold"
+                className="h-9 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold"
               >
                 Reset Filters
               </button>
-            )}
+            </div>
           </div>
-        </div>
+        )
       ) : viewMode === 'list' ? (
-        <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8 overflow-hidden">
+        <div className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8 overflow-hidden">
           {filteredDocs.map((doc) => {
             const isSelected = selectedDocIds.has(doc.id);
             const cover = doc.pages[0];
@@ -476,7 +525,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   if (selectMode) toggleSelectDoc(doc.id);
                   else onOpenViewer(doc.id);
                 }}
-                className={`flex items-center gap-3.5 p-3.5 sm:p-4 cursor-pointer transition-colors ${
+                className={`flex items-center gap-2.5 sm:gap-3 px-2.5 py-2 sm:px-3.5 sm:py-2.5 cursor-pointer transition-colors ${
                   isSelected
                     ? 'bg-orange-50/70 dark:bg-orange-950/25'
                     : 'hover:bg-slate-50/80 dark:hover:bg-white/[0.03]'
@@ -484,21 +533,21 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               >
                 {selectMode && (
                   <span
-                    className={`w-6 h-6 rounded-full flex items-center justify-center border shrink-0 transition-colors ${
+                    className={`w-5 h-5 rounded-full flex items-center justify-center border shrink-0 transition-colors ${
                       isSelected
                         ? 'bg-orange-600 border-orange-600 text-white'
                         : 'border-slate-300 dark:border-slate-600'
                     }`}
                   >
-                    {isSelected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                    {isSelected && <Check className="w-3 h-3 stroke-[2.5]" />}
                   </span>
                 )}
 
-                <div className="relative w-12 h-16 shrink-0">
+                <div className="relative w-9 h-12 sm:w-11 sm:h-14 shrink-0">
                   {doc.pages.length > 1 && (
-                    <div className="absolute -right-1 -top-1 w-full h-full rounded-md bg-slate-200 dark:bg-slate-700 border border-slate-300/60 dark:border-white/10" />
+                    <div className="absolute -right-0.5 -top-0.5 w-full h-full rounded bg-slate-200 dark:bg-slate-700 border border-slate-300/60 dark:border-white/10" />
                   )}
-                  <div className="relative w-full h-full rounded-md overflow-hidden bg-white border border-slate-200/90 shadow-xs">
+                  <div className="relative w-full h-full rounded overflow-hidden bg-white border border-slate-200/90 shadow-xs">
                     {cover && (
                       <PageCanvasPreview
                         page={cover}
@@ -510,30 +559,38 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 </div>
 
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <h3 className="text-sm sm:text-[15px] font-semibold text-slate-900 dark:text-white truncate">
+                  <div className="flex items-center gap-1">
+                    <h3 className="text-[13px] sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
                       {doc.title}
                     </h3>
                     {doc.passwordProtected && (
-                      <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <Lock className="w-3 h-3 text-slate-400 shrink-0" />
                     )}
                   </div>
 
-                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
+                  <div className="mt-0.5 flex items-center gap-x-1.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    {doc.fileExtension && doc.fileExtension !== 'pdf' && (
+                      <>
+                        <span className="font-mono uppercase font-semibold text-orange-600 dark:text-orange-400">
+                          {doc.fileExtension}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                      </>
+                    )}
                     <span className="font-mono tabular-nums font-medium text-slate-700 dark:text-slate-300">
-                      {doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'}
+                      {doc.pages.length}p
                     </span>
                     <span aria-hidden="true">·</span>
                     <span className="font-mono tabular-nums">{formatBytes(doc.sizeBytes)}</span>
                     <span aria-hidden="true">·</span>
                     <span>{formatShortDate(doc.updatedAt)}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{folderNameMap[doc.folderId] ?? 'Inbox'}</span>
+                    <span className="hidden sm:inline" aria-hidden="true">·</span>
+                    <span className="hidden sm:inline">{folderNameMap[doc.folderId] ?? 'Inbox'}</span>
                     {doc.tags.length > 0 && (
                       <>
                         <span aria-hidden="true">·</span>
-                        <span className="text-orange-700 dark:text-orange-400">
-                          {doc.tags.join(', ')}
+                        <span className="text-orange-700 dark:text-orange-400 truncate">
+                          {doc.tags.slice(0, 2).join(', ')}
                         </span>
                       </>
                     )}
@@ -542,14 +599,14 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
 
                 {!selectMode && (
                   <div
-                    className="flex items-center gap-1 shrink-0"
+                    className="flex items-center gap-0.5 shrink-0"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <button
                       type="button"
                       onClick={() => onOpenOrganizer(doc.id)}
                       title="Organize pages"
-                      className="min-h-[38px] px-2.5 sm:px-3 rounded-xl bg-orange-50 dark:bg-orange-950/35 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-950/55 text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      className="h-8 px-2 sm:px-2.5 rounded-lg bg-orange-50 dark:bg-orange-950/35 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-950/55 text-[11px] font-semibold flex items-center gap-1 transition-colors whitespace-nowrap"
                     >
                       <Layers className="w-3.5 h-3.5" />
                       <span className="hidden sm:inline">Organize</span>
@@ -558,10 +615,10 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                       type="button"
                       onClick={() => onToggleBookmark(doc.id)}
                       aria-label={doc.isBookmarked ? 'Remove star' : 'Star document'}
-                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-slate-400 hover:text-orange-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-orange-600 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
                     >
                       <Bookmark
-                        className={`w-4 h-4 ${doc.isBookmarked ? 'fill-orange-500 text-orange-500' : ''}`}
+                        className={`w-3.5 h-3.5 ${doc.isBookmarked ? 'fill-orange-500 text-orange-500' : ''}`}
                       />
                     </button>
                     <button
@@ -571,7 +628,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                         setRenameValue(doc.title);
                       }}
                       aria-label="More document options"
-                      className="min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
                     >
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
@@ -582,7 +639,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           })}
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-3.5">
           {filteredDocs.map((doc) => {
             const isSelected = selectedDocIds.has(doc.id);
             const cover = doc.pages[0];
@@ -593,13 +650,13 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   if (selectMode) toggleSelectDoc(doc.id);
                   else onOpenViewer(doc.id);
                 }}
-                className={`group flex flex-col rounded-2xl p-3 bg-white dark:bg-[#1C1C1E] border cursor-pointer transition-all ${
+                className={`group flex flex-col rounded-xl sm:rounded-2xl p-2 sm:p-2.5 bg-white dark:bg-[#1C1C1E] border cursor-pointer transition-all ${
                   isSelected
                     ? 'border-orange-600 ring-2 ring-orange-500/30'
                     : 'border-slate-200/80 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20'
                 }`}
               >
-                <div className="relative aspect-[3/4] rounded-xl bg-slate-100 dark:bg-[#121214] p-2.5 mb-3 overflow-hidden">
+                <div className="relative aspect-[3/4] rounded-lg bg-slate-100 dark:bg-[#121214] p-1.5 mb-2 overflow-hidden">
                   {cover && (
                     <PageCanvasPreview
                       page={cover}

@@ -28,6 +28,126 @@ interface ExtendedDirectoryHandle extends FileSystemDirectoryHandle {
   requestPermission?: (desc?: PermissionDescriptor) => Promise<'granted' | 'denied' | 'prompt'>;
 }
 
+/**
+ * Native Android WebView JS Bridge contract matching FileLensMobile's
+ * StoragePermissionHelper.kt (MANAGE_EXTERNAL_STORAGE / API 30+) and DocumentIndexer.kt.
+ * Exposed via WebView.addJavascriptInterface(bridge, "FileLensAndroid").
+ */
+export interface FileLensAndroidBridge {
+  hasAllFilesAccess?: () => boolean;
+  requestAllFilesAccess?: () => boolean | void;
+  startDeviceIndex?: (filtersJson?: string) => boolean | void;
+  getAndroidApiLevel?: () => number;
+  getStorageRootPath?: () => string;
+}
+
+declare global {
+  interface Window {
+    FileLensAndroid?: FileLensAndroidBridge;
+  }
+}
+
+export interface DeviceRuntimeInfo {
+  isAndroid: boolean;
+  isIOS: boolean;
+  isMobile: boolean;
+  isInIframe: boolean;
+  hasNativeAndroidBridge: boolean;
+  canUseDirectoryPickerDirect: boolean;
+  supportsWebkitDirectory: boolean;
+}
+
+export function detectDeviceRuntime(): DeviceRuntimeInfo {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      isAndroid: false,
+      isIOS: false,
+      isMobile: false,
+      isInIframe: false,
+      hasNativeAndroidBridge: false,
+      canUseDirectoryPickerDirect: false,
+      supportsWebkitDirectory: true,
+    };
+  }
+
+  const ua = navigator.userAgent || '';
+  const isAndroid = /Android/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
+  const isMobile =
+    isAndroid ||
+    isIOS ||
+    /Mobile|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+
+  let isInIframe = false;
+  try {
+    isInIframe = window.self !== window.top;
+  } catch {
+    isInIframe = true;
+  }
+
+  const hasNativeAndroidBridge = Boolean(window.FileLensAndroid);
+  const canUseDirectoryPickerDirect =
+    isFileSystemAccessSupported() && !isInIframe && !isMobile;
+
+  // Android Chrome / WebView and iOS Safari ignore or break on <input webkitdirectory>
+  const supportsWebkitDirectory = !isMobile;
+
+  return {
+    isAndroid,
+    isIOS,
+    isMobile,
+    isInIframe,
+    hasNativeAndroidBridge,
+    canUseDirectoryPickerDirect,
+    supportsWebkitDirectory,
+  };
+}
+
+export type AndroidAllFilesPermissionStatus =
+  | 'granted'
+  | 'required'
+  | 'browser_sandbox';
+
+export function getAndroidAllFilesPermissionStatus(): AndroidAllFilesPermissionStatus {
+  if (typeof window === 'undefined' || !window.FileLensAndroid) {
+    return 'browser_sandbox';
+  }
+  try {
+    if (typeof window.FileLensAndroid.hasAllFilesAccess === 'function') {
+      return window.FileLensAndroid.hasAllFilesAccess() ? 'granted' : 'required';
+    }
+    return 'required';
+  } catch {
+    return 'required';
+  }
+}
+
+export function requestAndroidAllFilesAccess(): boolean {
+  if (typeof window === 'undefined' || !window.FileLensAndroid) return false;
+  try {
+    if (typeof window.FileLensAndroid.requestAllFilesAccess === 'function') {
+      window.FileLensAndroid.requestAllFilesAccess();
+      return true;
+    }
+  } catch {
+    // Ignore bridge call failure
+  }
+  return false;
+}
+
+export function triggerAndroidNativeDeviceIndex(filters: DeviceIndexFilters): boolean {
+  if (typeof window === 'undefined' || !window.FileLensAndroid) return false;
+  try {
+    if (typeof window.FileLensAndroid.startDeviceIndex === 'function') {
+      window.FileLensAndroid.startDeviceIndex(JSON.stringify(filters));
+      return true;
+    }
+  } catch {
+    // Ignore bridge call failure
+  }
+  return false;
+}
+
 const IGNORED_SYSTEM_DIRS = new Set([
   '.git',
   '.svn',
@@ -321,6 +441,21 @@ export async function deleteStoredDeviceRoot(id: string): Promise<void> {
   }
 }
 
+export async function clearAllStoredDeviceRoots(): Promise<void> {
+  try {
+    const db = await openRootsDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.clear();
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // Ignore errors
+  }
+}
+
 export type PickRootResult =
   | { status: 'linked'; root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }
   | { status: 'cancelled' }
@@ -329,13 +464,16 @@ export type PickRootResult =
 /**
  * Opens native File System Access directory picker anchored to a device location
  * (Documents, Downloads, Pictures, Desktop, or full Drive/Home storage).
- * Automatically signals fallback_needed if inside a restricted iframe or unsupported browser.
+ * Must be called directly from a user click handler without prior awaits.
  */
 export async function pickAndLinkDeviceRoot(preset: DeviceRootPreset): Promise<PickRootResult> {
-  if (!isFileSystemAccessSupported()) {
+  const runtime = detectDeviceRuntime();
+  if (!runtime.canUseDirectoryPickerDirect) {
     return {
       status: 'fallback_needed',
-      reason: 'Browser uses standard folder upload picker.',
+      reason: runtime.isMobile
+        ? 'Mobile browser uses native Android/iOS multi-file storage picker.'
+        : 'Embedded preview uses native OS folder selector.',
     };
   }
 

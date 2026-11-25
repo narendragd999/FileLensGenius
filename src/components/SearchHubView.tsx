@@ -44,12 +44,12 @@ interface SearchHubViewProps {
 }
 
 const SEARCH_MODES: { id: SearchMode; label: string; hint: string }[] = [
-  { id: 'quick', label: 'Quick Search', hint: 'Partial + bilingual Hinglish/concept expansion across ALL indexed device files (try "bill", "doctor", "docx")' },
-  { id: 'natural', label: 'Natural Language', hint: '384-dim offline semantic vector similarity across all files & OCR chunks (try "show my paid studio invoice")' },
-  { id: 'exact', label: 'Exact Match', hint: 'Exact phrase substring match across PDFs, Office, OCR photos, code & filenames (try "Apex Solutions")' },
-  { id: 'whole', label: 'Whole Word', hint: 'Strict word boundary matching (try "PAID")' },
-  { id: 'wildcard', label: 'Wildcard', hint: 'Use * and ? wildcards (try "Micro*" or "NDS-????")' },
-  { id: 'boolean', label: 'Boolean', hint: 'Combine AND / OR / NOT operators (try "PAID AND Invoice")' },
+  { id: 'quick', label: 'Quick Search', hint: 'Partial + bilingual Hinglish/concept expansion across ALL indexed device files (try "bill", "doctor", "pdf")' },
+  { id: 'natural', label: 'Natural Language', hint: '384-dim offline semantic vector similarity across all files & OCR text' },
+  { id: 'exact', label: 'Exact Match', hint: 'Exact phrase substring match across PDFs, Office, OCR photos, code & filenames' },
+  { id: 'whole', label: 'Whole Word', hint: 'Strict word boundary matching across indexed content' },
+  { id: 'wildcard', label: 'Wildcard', hint: 'Use * and ? wildcards (try "inv*" or "2026-??")' },
+  { id: 'boolean', label: 'Boolean', hint: 'Combine AND / OR / NOT operators (try "Invoice AND Paid")' },
 ];
 
 const FILE_TYPE_FILTERS: { id: 'all' | FileCategory; label: string }[] = [
@@ -63,7 +63,7 @@ const FILE_TYPE_FILTERS: { id: 'all' | FileCategory; label: string }[] = [
   { id: 'other', label: 'Other' },
 ];
 
-const QUICK_CONCEPTS = ['PAID AND Invoice', 'cholesterol', 'Apex*', 'doctor', 'API Gateway', 'ID Card'];
+const QUICK_CONCEPTS = ['Invoice', 'Receipt', 'Contract', 'Medical', 'ID Card', 'Tax'];
 
 function highlightText(text: string, terms: string[]): React.ReactNode {
   if (!terms.length) return text;
@@ -132,34 +132,12 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
   };
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-          Universal Device Search &amp; Index
-        </h1>
-        <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-          Search inside any file on your device—PDFs, Office docs, OCR photos, code, archives &amp; media
-        </p>
-      </div>
-
-      {/* Core Universal Smart Indexing Module */}
-      <SmartIndexingBar
-        stats={indexStats}
-        linkedDeviceRootsCount={linkedDeviceRootsCount}
-        isIndexing={isIndexing}
-        progress={indexProgress}
-        lastSummary={lastIndexSummary}
-        onOpenDeviceIndexer={onOpenDeviceIndexer}
-        onIndexFiles={onIndexFiles}
-        onRunDeltaReindex={onRunDeltaReindex}
-        onCancelIndexing={onCancelIndexing}
-      />
-
-      {/* Search Input Bar */}
-      <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border border-slate-200/80 dark:border-white/10 space-y-3.5">
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-orange-600 dark:text-orange-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+    <div className="space-y-2 sm:space-y-3">
+      {/* Search-First Sticky Command Card right at the top of the screen! */}
+      <div className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 border border-slate-200/80 dark:border-white/10 space-y-2">
+        <div className="flex items-center gap-1.5">
+          <div className="relative flex-1 min-w-0">
+            <Search className="w-4 h-4 text-orange-600 dark:text-orange-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={query}
@@ -167,14 +145,15 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 setQuery(e.target.value);
                 setActiveMatchIdx(0);
               }}
-              placeholder="Search inside ANY device file: PDFs, DOCX, XLSX, OCR photos, ZIPs, code, filenames…"
-              className="w-full h-12 pl-10 pr-9 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              placeholder="Search ANY device file, OCR text, DOCX, PDF, ZIP…"
+              className="w-full h-10 pl-9 pr-8 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -188,15 +167,15 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
               onToast('Saved search query');
             }}
             title="Save this search"
-            className="h-12 px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 text-slate-700 dark:text-slate-200 hover:text-orange-600 disabled:opacity-40 flex items-center gap-1.5 text-xs font-semibold whitespace-nowrap transition-colors"
+            className="h-10 px-2.5 sm:px-3 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/40 text-slate-700 dark:text-slate-200 hover:text-orange-600 disabled:opacity-40 flex items-center gap-1 text-xs font-semibold whitespace-nowrap transition-colors shrink-0"
           >
             <BookmarkPlus className="w-4 h-4" />
             <span className="hidden sm:inline">Save</span>
           </button>
         </div>
 
-        {/* 6 Search Modes Segmented Bar */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+        {/* Single-Row Compact 6 Search Modes */}
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
           {SEARCH_MODES.map((m) => (
             <button
               key={m.id}
@@ -205,7 +184,7 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 setMode(m.id);
                 setActiveMatchIdx(0);
               }}
-              className={`min-h-[36px] px-3 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 mode === m.id
                   ? 'bg-orange-600 text-white'
                   : 'bg-slate-100 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-white/15'
@@ -216,8 +195,8 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           ))}
         </div>
 
-        {/* Universal File Type Filter Row */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+        {/* Single-Row Compact Universal File Type Filters */}
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
           {FILE_TYPE_FILTERS.map((ft) => (
             <button
               key={ft.id}
@@ -226,9 +205,9 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 setFileTypeFilter(ft.id);
                 setActiveMatchIdx(0);
               }}
-              className={`min-h-[30px] px-2.5 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`h-6 px-2 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
                 fileTypeFilter === ft.id
-                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold'
                   : 'bg-slate-50 dark:bg-[#2C2C2E] text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/10'
               }`}
             >
@@ -237,54 +216,75 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           ))}
         </div>
 
-        <p className="text-xs text-slate-500 dark:text-slate-400">{currentModeMeta.hint}</p>
-
-        {/* Quick Concept Suggestions */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pt-1">
-          <span className="text-xs text-slate-400 shrink-0 mr-1">Try:</span>
-          {QUICK_CONCEPTS.map((concept) => (
-            <button
-              key={concept}
-              type="button"
-              onClick={() => {
-                if (concept.includes('AND') || concept.includes('OR')) setMode('boolean');
-                else if (concept.includes('*')) setMode('wildcard');
-                else setMode('quick');
-                setQuery(concept);
-                setActiveMatchIdx(0);
-              }}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200/80 dark:border-white/8 hover:border-orange-400 text-slate-700 dark:text-slate-300 whitespace-nowrap shrink-0 transition-colors"
-            >
-              {concept}
-            </button>
-          ))}
-        </div>
+        {/* Only show hint & Try chips when query is empty so results take 100% of screen while searching! */}
+        {!query.trim() && (
+          <div className="space-y-1.5 pt-0.5">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">{currentModeMeta.hint}</p>
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+              <span className="text-[11px] text-slate-400 shrink-0 mr-0.5">Try:</span>
+              {QUICK_CONCEPTS.map((concept) => (
+                <button
+                  key={concept}
+                  type="button"
+                  onClick={() => {
+                    if (concept.includes('AND') || concept.includes('OR')) setMode('boolean');
+                    else if (concept.includes('*')) setMode('wildcard');
+                    else setMode('quick');
+                    setQuery(concept);
+                    setActiveMatchIdx(0);
+                  }}
+                  className="h-6 px-2 rounded-md text-[11px] font-medium bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200/80 dark:border-white/8 hover:border-orange-400 text-slate-700 dark:text-slate-300 whitespace-nowrap shrink-0 transition-colors"
+                >
+                  {concept}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Results Header: Match X of Y Navigation + Export Extracted Text */}
+      {/* Compact 1-Line Smart Indexing Strip (auto-hidden when actively viewing results unless indexing) */}
+      {(!query.trim() || isIndexing) && (
+        <SmartIndexingBar
+          compact
+          stats={indexStats}
+          linkedDeviceRootsCount={linkedDeviceRootsCount}
+          isIndexing={isIndexing}
+          progress={indexProgress}
+          lastSummary={lastIndexSummary}
+          onOpenDeviceIndexer={onOpenDeviceIndexer}
+          onIndexFiles={onIndexFiles}
+          onRunDeltaReindex={onRunDeltaReindex}
+          onCancelIndexing={onCancelIndexing}
+        />
+      )}
+
+      {/* Compact Results Bar: Match X of Y + Export */}
       {query.trim() && (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
+        <div className="flex items-center justify-between gap-2 px-0.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
             <span className="font-semibold">
               {results.length > 0
-                ? `Match ${safeMatchIdx + 1} of ${results.length}`
-                : '0 matching documents'}
+                ? `${safeMatchIdx + 1}/${results.length} hits`
+                : '0 hits'}
             </span>
             {results.length > 1 && (
-              <div className="flex items-center gap-1 ml-1">
+              <div className="flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() =>
                     setActiveMatchIdx((i) => (i - 1 + results.length) % results.length)
                   }
-                  className="w-7 h-7 rounded-lg bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center"
+                  aria-label="Previous match"
+                  className="w-6 h-6 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveMatchIdx((i) => (i + 1) % results.length)}
-                  className="w-7 h-7 rounded-lg bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center"
+                  aria-label="Next match"
+                  className="w-6 h-6 rounded-md bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 flex items-center justify-center"
                 >
                   <ChevronRight className="w-3.5 h-3.5" />
                 </button>
@@ -293,17 +293,14 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           </div>
 
           {results.length > 0 && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-slate-500 flex items-center gap-1 mr-1">
-                <Download className="w-3.5 h-3.5" />
-                <span>Export:</span>
-              </span>
+            <div className="flex items-center gap-1">
+              <Download className="w-3 h-3 text-slate-400 mr-0.5" />
               {(['txt', 'md', 'csv', 'json'] as const).map((fmt) => (
                 <button
                   key={fmt}
                   type="button"
                   onClick={() => handleExport(fmt)}
-                  className="px-2.5 py-1.5 rounded-lg text-[11px] font-mono font-semibold uppercase bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-500 text-slate-700 dark:text-slate-200 transition-colors"
+                  className="px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold uppercase bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-500 text-slate-700 dark:text-slate-200 transition-colors"
                 >
                   {fmt}
                 </button>
@@ -313,17 +310,32 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
         </div>
       )}
 
-      {/* Search Results OR Saved Searches */}
+      {/* High-Density Search Results OR Saved Searches */}
       {query.trim() ? (
         results.length === 0 ? (
-          <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-10 text-center space-y-2">
-            <h3 className="text-sm font-bold">No OCR hits for &ldquo;{query}&rdquo;</h3>
+          <div className="bg-white dark:bg-[#1C1C1E] rounded-xl border border-slate-200/80 dark:border-white/10 p-6 text-center space-y-2">
+            <h3 className="text-sm font-bold">
+              {documents.length === 0
+                ? 'No files indexed yet'
+                : `No hits for "${query}"`}
+            </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Switch to Natural Language for 384-dim semantic vector search, or index new folders above.
+              {documents.length === 0
+                ? 'Index files from your device storage first to search text, OCR, and filenames.'
+                : 'Try Natural Language (384-dim semantic vectors) or switch File Types to All.'}
             </p>
+            {documents.length === 0 && (
+              <button
+                type="button"
+                onClick={onOpenDeviceIndexer}
+                className="h-9 px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold"
+              >
+                Index Device Files
+              </button>
+            )}
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/8 overflow-hidden">
             {results.map((item, idx) => {
               const isFocused = idx === safeMatchIdx;
               const matchedPage = item.doc.pages[item.pageIndex] ?? item.doc.pages[0];
@@ -331,20 +343,20 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                 <div
                   key={item.doc.id}
                   onClick={() => onOpenDocumentAtPage(item.doc.id, item.pageIndex)}
-                  className={`bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 border cursor-pointer transition-all flex gap-4 ${
+                  className={`px-2.5 py-2.5 sm:px-3.5 sm:py-3 cursor-pointer transition-colors flex gap-2.5 sm:gap-3 ${
                     isFocused
-                      ? 'border-orange-500 ring-2 ring-orange-500/20'
-                      : 'border-slate-200/80 dark:border-white/10 hover:border-slate-300'
+                      ? 'bg-orange-50/70 dark:bg-orange-950/25'
+                      : 'hover:bg-slate-50/80 dark:hover:bg-white/[0.03]'
                   }`}
                 >
-                  <div className="w-14 h-20 rounded-lg overflow-hidden bg-white border border-slate-200 shrink-0">
+                  <div className="w-10 h-14 sm:w-12 sm:h-16 rounded overflow-hidden bg-white border border-slate-200 shrink-0">
                     {matchedPage && (
                       <PageCanvasPreview page={matchedPage} className="w-full h-full" />
                     )}
                   </div>
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-[13px] sm:text-sm font-bold text-slate-900 dark:text-white truncate">
                         {item.doc.title}
                       </h3>
                       <button
@@ -353,45 +365,41 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                           e.stopPropagation();
                           onOpenOrganizer(item.doc.id);
                         }}
-                        className="text-xs font-semibold text-orange-600 dark:text-orange-400 hover:underline flex items-center gap-1 shrink-0"
+                        className="text-[11px] font-semibold text-orange-600 dark:text-orange-400 hover:underline flex items-center gap-1 shrink-0"
                       >
-                        <Layers className="w-3.5 h-3.5" />
-                        <span>Organize</span>
+                        <Layers className="w-3 h-3" />
+                        <span className="hidden sm:inline">Organize</span>
                       </button>
                     </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums flex flex-wrap items-center gap-x-2">
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums flex flex-wrap items-center gap-x-1.5">
                       {item.doc.fileExtension && (
                         <>
-                          <span className="uppercase font-semibold text-slate-700 dark:text-slate-200">
+                          <span className="uppercase font-semibold text-orange-600 dark:text-orange-400">
                             {item.doc.fileExtension}
                           </span>
                           <span aria-hidden="true">·</span>
                         </>
                       )}
-                      <span>Jump to Page {item.pageIndex + 1}</span>
+                      <span>P{item.pageIndex + 1}</span>
                       <span aria-hidden="true">·</span>
-                      <span>
-                        {item.matchCount} match{item.matchCount > 1 ? 'es' : ''}
-                      </span>
+                      <span>{item.matchCount} hit{item.matchCount > 1 ? 's' : ''}</span>
                       {item.semanticSimilarity !== undefined && (
                         <>
                           <span aria-hidden="true">·</span>
                           <span className="text-orange-600 dark:text-orange-400 font-semibold">
-                            {Math.round(item.semanticSimilarity * 100)}% vector match
+                            {Math.round(item.semanticSimilarity * 100)}%
                           </span>
                         </>
                       )}
                       <span aria-hidden="true">·</span>
                       <span>{formatBytes(item.doc.sizeBytes)}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{formatShortDate(item.doc.updatedAt)}</span>
                     </div>
                     {item.doc.sourcePath && (
-                      <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 truncate">
+                      <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 truncate">
                         {item.doc.sourcePath}
                       </div>
                     )}
-                    <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+                    <p className="text-xs text-slate-700 dark:text-slate-300 leading-snug line-clamp-2">
                       {highlightText(item.snippet, item.matchedTerms)}
                     </p>
                   </div>
@@ -401,15 +409,17 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           </div>
         )
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-4 sm:p-5 space-y-3">
-            <h2 className="text-sm font-bold">Saved Searches</h2>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <section className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 p-3 sm:p-4 space-y-2">
+            <h2 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+              Saved Searches
+            </h2>
             {savedSearches.length === 0 ? (
               <p className="text-xs text-slate-500">Save frequent queries for one-tap recall.</p>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-white/8">
                 {savedSearches.map((saved) => (
-                  <div key={saved.id} className="py-2.5 flex items-center justify-between gap-3">
+                  <div key={saved.id} className="py-1.5 flex items-center justify-between gap-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -418,20 +428,20 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                       }}
                       className="text-left min-w-0 flex-1"
                     >
-                      <div className="text-sm font-semibold text-slate-900 dark:text-white truncate hover:text-orange-600">
+                      <div className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate hover:text-orange-600">
                         {saved.query}
                       </div>
-                      <div className="text-xs text-slate-500 capitalize">
-                        {saved.mode} mode · {formatShortDate(saved.createdAt)}
+                      <div className="text-[11px] text-slate-500 capitalize">
+                        {saved.mode} · {formatShortDate(saved.createdAt)}
                       </div>
                     </button>
                     <button
                       type="button"
                       onClick={() => onDeleteSavedSearch(saved.id)}
-                      className="p-2 text-slate-400 hover:text-red-600"
+                      className="p-1.5 text-slate-400 hover:text-red-600"
                       aria-label="Delete saved search"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 ))}
@@ -439,10 +449,12 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
             )}
           </section>
 
-          <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-4 sm:p-5 space-y-3">
-            <h2 className="text-sm font-bold">Starred Documents</h2>
+          <section className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 p-3 sm:p-4 space-y-2">
+            <h2 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+              Starred Files
+            </h2>
             {documents.filter((d) => d.isBookmarked).length === 0 ? (
-              <p className="text-xs text-slate-500">Star documents to keep them pinned here.</p>
+              <p className="text-xs text-slate-500">Star files to keep them pinned here.</p>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-white/8">
                 {documents
@@ -452,15 +464,15 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
                       key={doc.id}
                       type="button"
                       onClick={() => onOpenDocumentAtPage(doc.id, 0)}
-                      className="w-full py-2.5 flex items-center justify-between gap-3 text-left hover:opacity-80"
+                      className="w-full py-1.5 flex items-center justify-between gap-2 text-left hover:opacity-80"
                     >
                       <div className="min-w-0">
-                        <div className="text-sm font-semibold truncate">{doc.title}</div>
-                        <div className="text-xs text-slate-500 font-mono tabular-nums">
-                          {doc.pages.length} pages · {formatBytes(doc.sizeBytes)}
+                        <div className="text-xs sm:text-sm font-semibold truncate">{doc.title}</div>
+                        <div className="text-[11px] text-slate-500 font-mono tabular-nums">
+                          {doc.pages.length}p · {formatBytes(doc.sizeBytes)}
                         </div>
                       </div>
-                      <Bookmark className="w-4 h-4 fill-orange-500 text-orange-500 shrink-0" />
+                      <Bookmark className="w-3.5 h-3.5 fill-orange-500 text-orange-500 shrink-0" />
                     </button>
                   ))}
               </div>

@@ -88,25 +88,20 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Smart Cards Wallet
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            2-in-1 A4 ID cards, medical records, insurance &amp; Expiry Radar
-          </p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+          Smart Cards
+        </h1>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
           <button
             type="button"
             onClick={onLaunchIdScanner}
-            className="min-h-[42px] px-4 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold flex items-center gap-2 transition-colors whitespace-nowrap"
+            className="h-8 px-3 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap"
           >
-            <IdCard className="w-4 h-4" />
-            <span>Scan 2-in-1 ID</span>
+            <IdCard className="w-3.5 h-3.5" />
+            <span>2-in-1 ID</span>
           </button>
           <button
             type="button"
@@ -114,22 +109,22 @@ export const SmartCardsView: React.FC<SmartCardsViewProps> = ({
               setPromoteDocId(nonCardDocs[0]?.id ?? '');
               setShowPromoteModal(true);
             }}
-            className="min-h-[42px] px-3.5 rounded-xl bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
+            className="h-8 px-2.5 rounded-lg bg-white dark:bg-[#1C1C1E] border border-slate-200 dark:border-white/10 hover:border-orange-400 text-xs font-semibold flex items-center gap-1 whitespace-nowrap"
           >
-            <Plus className="w-4 h-4 text-orange-600" />
-            <span>Promote PDF</span>
+            <Plus className="w-3.5 h-3.5 text-orange-600" />
+            <span>Promote</span>
           </button>
           <button
             type="button"
             onClick={onTogglePrivacyBlur}
-            className={`min-h-[42px] px-3.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+            className={`h-8 px-2.5 rounded-lg border text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap ${
               privacyBlur
                 ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-transparent'
                 : 'bg-white dark:bg-[#1C1C1E] border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200'
             }`}
           >
-            {privacyBlur ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-            <span>{privacyBlur ? 'Reveal Cards' : 'Privacy Blur'}</span>
+            {privacyBlur ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            <span>{privacyBlur ? 'Reveal' : 'Blur'}</span>
           </button>
         </div>
       </div>

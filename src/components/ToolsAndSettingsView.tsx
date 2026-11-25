@@ -1,11 +1,10 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import {
   CopyCheck,
   Download,
   HardDrive,
   Minimize2,
   Moon,
-  RotateCcw,
   Sun,
   Trash2,
   Upload,
@@ -24,6 +23,7 @@ import {
 import { NAMING_TEMPLATES, SCAN_FILTERS } from '../data/seedData';
 import { formatBytes, triggerFileDownload } from '../utils/formatters';
 import { findSemanticDuplicates } from '../utils/smartTaxonomy';
+import { getBrowserStorageUsageBytes } from '../utils/vaultStorage';
 import { SmartIndexingBar } from './SmartIndexingBar';
 
 interface ToolsAndSettingsViewProps {
@@ -43,7 +43,7 @@ interface ToolsAndSettingsViewProps {
   onDeleteDocument: (docId: string) => void;
   onExportWorkspaceBackup: () => string;
   onImportWorkspaceBackup: (json: string) => boolean;
-  onResetDemoWorkspace: () => void;
+  onClearWorkspace: () => void;
   onToast: (message: string) => void;
 }
 
@@ -75,32 +75,31 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
   onDeleteDocument,
   onExportWorkspaceBackup,
   onImportWorkspaceBackup,
-  onResetDemoWorkspace,
+  onClearWorkspace,
   onToast,
 }) => {
   const [compressPreset, setCompressPreset] = useState<PdfCompressPreset>('balanced');
-  const [cacheBytes, setCacheBytes] = useState<number>(4_820_000);
-  const backupInputRef = useRef<HTMLInputElement | null>(null);
+  const [indexedDbBytes, setIndexedDbBytes] = useState<number>(0);
+  const backupInputId = useId();
+
+  useEffect(() => {
+    void getBrowserStorageUsageBytes().then((bytes) => setIndexedDbBytes(bytes));
+  }, [documents.length]);
 
   const storageStats = useMemo(() => {
     const totalBytes = documents.reduce((acc, d) => acc + d.sizeBytes, 0);
     const totalPages = documents.reduce((acc, d) => acc + d.pages.length, 0);
     const selectedOpt = PDF_COMPRESS_OPTIONS.find((o) => o.id === compressPreset)!;
     const estSavings = Math.round(totalBytes * (1 - selectedOpt.ratio));
-    return { totalBytes, totalPages, estSavings };
-  }, [documents, compressPreset]);
+    const overheadBytes = Math.max(0, indexedDbBytes - totalBytes);
+    return { totalBytes, totalPages, estSavings, overheadBytes };
+  }, [documents, compressPreset, indexedDbBytes]);
 
   const semanticDuplicates = useMemo(() => findSemanticDuplicates(documents, 0.8), [documents]);
 
   const handleCompressAll = () => {
     const { savedBytes, count } = onBatchCompressPdfs(compressPreset);
     onToast(`Compressed ${count} PDF(s) · Freed ${formatBytes(savedBytes)}`);
-  };
-
-  const handleCleanCache = () => {
-    const freed = cacheBytes;
-    setCacheBytes(0);
-    onToast(`Cleared ${formatBytes(freed)} of temporary crop & render cache`);
   };
 
   const handleBackupDownload = () => {
@@ -123,14 +122,14 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-          Tools, Indexing &amp; Preferences
+    <div className="space-y-3.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+          Tools &amp; Indexing
         </h1>
-        <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-          Smart Indexing engine, Semantic Duplicate Finder, Batch PDF Compressor &amp; Genius Scan defaults
-        </p>
+        <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+          {formatBytes(storageStats.totalBytes)}
+        </span>
       </div>
 
       {/* Full Universal Smart Indexing Control Panel */}
@@ -156,7 +155,7 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
                 <h2 className="text-sm font-bold">Vault Storage Analyser</h2>
               </div>
               <span className="text-xs font-mono tabular-nums font-semibold text-slate-600 dark:text-slate-300">
-                {formatBytes(storageStats.totalBytes + cacheBytes)} used
+                {formatBytes(Math.max(storageStats.totalBytes, indexedDbBytes))} used
               </span>
             </div>
 
@@ -164,18 +163,27 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               <div
                 className="bg-orange-600 h-full transition-all"
                 style={{
-                  width: `${Math.min(
-                    100,
-                    Math.round((storageStats.totalBytes / Math.max(1, storageStats.totalBytes + cacheBytes)) * 100)
-                  )}%`,
+                  width:
+                    storageStats.totalBytes === 0
+                      ? '0%'
+                      : `${Math.min(
+                          100,
+                          Math.round(
+                            (storageStats.totalBytes /
+                              Math.max(1, storageStats.totalBytes + storageStats.overheadBytes)) *
+                              100
+                          )
+                        )}%`,
                 }}
               />
-              {cacheBytes > 0 && (
+              {storageStats.overheadBytes > 0 && (
                 <div
                   className="bg-slate-400 dark:bg-slate-600 h-full transition-all"
                   style={{
                     width: `${Math.round(
-                      (cacheBytes / Math.max(1, storageStats.totalBytes + cacheBytes)) * 100
+                      (storageStats.overheadBytes /
+                        Math.max(1, storageStats.totalBytes + storageStats.overheadBytes)) *
+                        100
                     )}%`,
                   }}
                 />
@@ -184,32 +192,17 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
 
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
               <span>
-                PDFs ({documents.length} files · {storageStats.totalPages} pages):{' '}
+                Vault ({documents.length} files · {storageStats.totalPages}p):{' '}
                 <strong className="text-slate-800 dark:text-slate-200">
                   {formatBytes(storageStats.totalBytes)}
                 </strong>
               </span>
               <span>
-                Temp Cache:{' '}
+                IndexedDB Index:{' '}
                 <strong className="text-slate-800 dark:text-slate-200">
-                  {formatBytes(cacheBytes)}
+                  {formatBytes(indexedDbBytes)}
                 </strong>
               </span>
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 dark:border-white/8 flex items-center justify-between gap-3">
-              <div className="text-xs text-slate-500 dark:text-slate-400">
-                Temporary crop thumbnails &amp; PDF render cache
-              </div>
-              <button
-                type="button"
-                disabled={cacheBytes === 0}
-                onClick={handleCleanCache}
-                className="min-h-[36px] px-3.5 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/30 disabled:opacity-40 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-orange-600" />
-                <span>{cacheBytes === 0 ? 'Cache Clean' : 'Clean Cache'}</span>
-              </button>
             </div>
           </section>
 
@@ -468,27 +461,26 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
                 <Download className="w-3.5 h-3.5" />
                 <span>Export Backup</span>
               </button>
-              <button
-                type="button"
-                onClick={() => backupInputRef.current?.click()}
-                className="min-h-[40px] px-4 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] text-xs font-semibold flex items-center gap-1.5"
+              <label
+                htmlFor={backupInputId}
+                className="min-h-[40px] px-4 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer select-none"
               >
                 <Upload className="w-3.5 h-3.5" />
                 <span>Restore JSON</span>
-              </button>
+              </label>
               <button
                 type="button"
-                onClick={onResetDemoWorkspace}
-                className="min-h-[40px] px-3.5 rounded-xl text-xs font-semibold text-slate-500 hover:text-red-600 flex items-center gap-1.5 ml-auto"
+                onClick={onClearWorkspace}
+                className="min-h-[40px] px-3.5 rounded-xl text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 flex items-center gap-1.5 ml-auto"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset Samples</span>
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear Local Vault</span>
               </button>
               <input
-                ref={backupInputRef}
+                id={backupInputId}
                 type="file"
                 accept="application/json"
-                className="hidden"
+                className="sr-only"
                 onChange={handleBackupFile}
               />
             </div>

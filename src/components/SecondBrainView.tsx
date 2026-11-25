@@ -196,23 +196,18 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Voice Second Brain
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            Capture notes in 16 languages with automatic temporal filing, checklists &amp; document links
-          </p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white truncate">
+          Second Brain
+        </h1>
 
-        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 rounded-xl px-3 h-10 shrink-0">
-          <Globe className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-white dark:bg-[#1C1C1E] border border-slate-200/80 dark:border-white/10 rounded-lg px-2.5 h-8 shrink-0">
+          <Globe className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
           <select
             value={voiceLanguage}
             onChange={(e) => onChangeVoiceLanguage(e.target.value)}
-            className="bg-transparent focus:outline-none text-xs font-semibold"
+            className="bg-transparent focus:outline-none text-[11px] font-semibold"
           >
             {VOICE_LANGUAGES.map((lang) => (
               <option key={lang.code} value={lang.code} className="text-slate-900">
@@ -224,7 +219,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
       </div>
 
       {/* Voice + Quick Text Composer */}
-      <div className="bg-white dark:bg-[#1C1C1E] rounded-2xl p-4 sm:p-5 border border-slate-200/80 dark:border-white/10 space-y-3">
+      <div className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl p-3 sm:p-4 border border-slate-200/80 dark:border-white/10 space-y-2.5">
         <div className="flex items-start gap-3">
           <button
             type="button"
@@ -242,7 +237,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
             rows={2}
             value={draftText}
             onChange={(e) => setDraftText(e.target.value)}
-            placeholder='Speak or type: "Remind me tomorrow to send the signed Apex contract and compress the invoice PDF…"'
+            placeholder='Speak or type: "Remind me tomorrow to submit the signed contract and send the invoice PDF…"'
             className="flex-1 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
           />
         </div>
@@ -509,26 +504,32 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
               </button>
             </div>
             <div className="overflow-y-auto space-y-1.5">
-              {documents.map((doc) => (
-                <button
-                  key={doc.id}
-                  type="button"
-                  onClick={() => {
-                    const target = notes.find((n) => n.id === linkingNoteId);
-                    if (target) {
-                      onUpdateNote({ ...target, linkedDocId: doc.id });
-                      onToast(`Linked "${doc.title}"`);
-                    }
-                    setLinkingNoteId(null);
-                  }}
-                  className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/30 flex items-center justify-between gap-2 text-left"
-                >
-                  <span className="text-sm font-semibold truncate">{doc.title}</span>
-                  <span className="text-xs font-mono text-slate-500 shrink-0">
-                    {doc.pages.length}p
-                  </span>
-                </button>
-              ))}
+              {documents.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400 py-4 text-center">
+                  No indexed files yet. Index device files or scan a document first.
+                </p>
+              ) : (
+                documents.map((doc) => (
+                  <button
+                    key={doc.id}
+                    type="button"
+                    onClick={() => {
+                      const target = notes.find((n) => n.id === linkingNoteId);
+                      if (target) {
+                        onUpdateNote({ ...target, linkedDocId: doc.id });
+                        onToast(`Linked "${doc.title}"`);
+                      }
+                      setLinkingNoteId(null);
+                    }}
+                    className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] hover:bg-orange-50 dark:hover:bg-orange-950/30 flex items-center justify-between gap-2 text-left"
+                  >
+                    <span className="text-sm font-semibold truncate">{doc.title}</span>
+                    <span className="text-xs font-mono text-slate-500 shrink-0">
+                      {doc.pages.length}p
+                    </span>
+                  </button>
+                ))
+              )}
             </div>
           </div>
         </div>

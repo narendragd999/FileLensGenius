@@ -34,16 +34,21 @@ import {
 } from './types/filelens';
 import {
   DEFAULT_PREFERENCES,
-  INITIAL_DOCUMENTS,
   INITIAL_FOLDERS,
-  INITIAL_SAVED_SEARCHES,
-  INITIAL_VOICE_NOTES,
 } from './data/seedData';
+import {
+  clearVaultState,
+  createEmptyVaultState,
+  loadVaultState,
+  PersistedVaultState,
+  saveVaultState,
+} from './utils/vaultStorage';
 import {
   runLibraryDeltaReindex,
   runSmartIndexingPipeline,
 } from './utils/smartIndexer';
 import {
+  clearAllStoredDeviceRoots,
   deleteStoredDeviceRoot,
   ensureDirectoryReadPermission,
   getStoredDeviceRootHandle,
@@ -62,69 +67,20 @@ import { PageOrganizerModal } from './components/PageOrganizerModal';
 import { PdfViewerModal } from './components/PdfViewerModal';
 import { DeviceIndexerModal } from './components/DeviceIndexerModal';
 
-const STORAGE_KEY = 'filelens_scan_workspace_v2';
-
-interface PersistedState {
-  documents: ScanDocument[];
-  folders: DocFolder[];
-  voiceNotes: VoiceNote[];
-  savedSearches: SavedSearch[];
-  savedSignatures: SavedSignature[];
-  preferences: AppPreferences;
-  lastIndexSummary?: DeviceIndexSummary | null;
-}
-
-function loadInitialState(): PersistedState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<PersistedState>;
-      if (Array.isArray(parsed.documents) && parsed.documents.length > 0) {
-        return {
-          documents: parsed.documents,
-          folders: parsed.folders ?? INITIAL_FOLDERS,
-          voiceNotes: parsed.voiceNotes ?? INITIAL_VOICE_NOTES,
-          savedSearches: parsed.savedSearches ?? INITIAL_SAVED_SEARCHES,
-          savedSignatures: parsed.savedSignatures ?? [],
-          preferences: { ...DEFAULT_PREFERENCES, ...(parsed.preferences ?? {}) },
-          lastIndexSummary: parsed.lastIndexSummary ?? null,
-        };
-      }
-    }
-  } catch {
-    // Fallback to seed state
-  }
-  return {
-    documents: INITIAL_DOCUMENTS.map((d) => ({
-      ...d,
-      ocrStatus: 'done',
-      indexedAt: d.updatedAt,
-      chunksCount: Math.max(1, d.pages.length),
-    })),
-    folders: INITIAL_FOLDERS,
-    voiceNotes: INITIAL_VOICE_NOTES,
-    savedSearches: INITIAL_SAVED_SEARCHES,
-    savedSignatures: [],
-    preferences: DEFAULT_PREFERENCES,
-    lastIndexSummary: null,
-  };
-}
-
 export default function App() {
-  const initial = useMemo(() => loadInitialState(), []);
-  const [documents, setDocuments] = useState<ScanDocument[]>(initial.documents);
-  const [folders, setFolders] = useState<DocFolder[]>(initial.folders);
-  const [voiceNotes, setVoiceNotes] = useState<VoiceNote[]>(initial.voiceNotes);
-  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(initial.savedSearches);
-  const [savedSignatures, setSavedSignatures] = useState<SavedSignature[]>(initial.savedSignatures);
-  const [preferences, setPreferences] = useState<AppPreferences>(initial.preferences);
+  const emptyInitial = useMemo(() => createEmptyVaultState(), []);
+  const [documents, setDocuments] = useState<ScanDocument[]>(emptyInitial.documents);
+  const [folders, setFolders] = useState<DocFolder[]>(emptyInitial.folders);
+  const [voiceNotes, setVoiceNotes] = useState<VoiceNote[]>(emptyInitial.voiceNotes);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(emptyInitial.savedSearches);
+  const [savedSignatures, setSavedSignatures] = useState<SavedSignature[]>(emptyInitial.savedSignatures);
+  const [preferences, setPreferences] = useState<AppPreferences>(emptyInitial.preferences);
+  const [isVaultHydrated, setIsVaultHydrated] = useState<boolean>(false);
 
   // Smart Indexing & Full-Device Storage Roots state
   const [isIndexing, setIsIndexing] = useState<boolean>(false);
   const [indexProgress, setIndexProgress] = useState<IndexProgress | null>(null);
-  const [lastIndexSummary, setLastIndexSummary] = useState<DeviceIndexSummary | null>(
-    initial.lastIndexSummary ?? null
-  );
+  const [lastIndexSummary, setLastIndexSummary] = useState<DeviceIndexSummary | null>(null);
   const [deviceRoots, setDeviceRoots] = useState<DeviceStorageRoot[]>([]);
   const [showDeviceIndexer, setShowDeviceIndexer] = useState<boolean>(false);
   const indexAbortRef = useRef<AbortController | null>(null);
@@ -142,8 +98,26 @@ export default function App() {
   const [organizerDocId, setOrganizerDocId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
+  // Hydrate persistent vault from IndexedDB (supports large real indexed files)
   useEffect(() => {
-    listStoredDeviceRoots().then((roots) => setDeviceRoots(roots));
+    let active = true;
+    void loadVaultState().then((loaded) => {
+      if (!active) return;
+      setDocuments(loaded.documents);
+      setFolders(loaded.folders);
+      setVoiceNotes(loaded.voiceNotes);
+      setSavedSearches(loaded.savedSearches);
+      setSavedSignatures(loaded.savedSignatures);
+      setPreferences(loaded.preferences);
+      setLastIndexSummary(loaded.lastIndexSummary);
+      setIsVaultHydrated(true);
+    });
+    void listStoredDeviceRoots().then((roots) => {
+      if (active) setDeviceRoots(roots);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -155,9 +129,11 @@ export default function App() {
     }
   }, [preferences.theme]);
 
+  // Persist workspace to IndexedDB with short debounce so large files survive reloads cleanly
   useEffect(() => {
-    try {
-      const payload: PersistedState = {
+    if (!isVaultHydrated) return;
+    const timer = window.setTimeout(() => {
+      const payload: PersistedVaultState = {
         documents,
         folders,
         voiceNotes,
@@ -166,11 +142,19 @@ export default function App() {
         preferences,
         lastIndexSummary,
       };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      // Ignore storage quota overflow for very large custom uploads
-    }
-  }, [documents, folders, voiceNotes, savedSearches, savedSignatures, preferences, lastIndexSummary]);
+      void saveVaultState(payload);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    isVaultHydrated,
+    documents,
+    folders,
+    voiceNotes,
+    savedSearches,
+    savedSignatures,
+    preferences,
+    lastIndexSummary,
+  ]);
 
   const showToast = (message: string) => {
     setToastMsg(message);
@@ -256,6 +240,23 @@ export default function App() {
       indexAbortRef.current = null;
     }
   };
+
+  // Support native Android APK WebView bridge pushing crawled storage files directly
+  const handleIndexFilesRef = useRef(handleIndexFiles);
+  handleIndexFilesRef.current = handleIndexFiles;
+  useEffect(() => {
+    const onAndroidFiles = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ files?: File[]; sourceLabel?: string }>).detail;
+      if (detail?.files && detail.files.length > 0) {
+        void handleIndexFilesRef.current(
+          detail.files,
+          detail.sourceLabel || 'Android Device Storage'
+        );
+      }
+    };
+    window.addEventListener('filelens-android-files', onAndroidFiles);
+    return () => window.removeEventListener('filelens-android-files', onAndroidFiles);
+  }, []);
 
   const runWalkAndIndexRoots = async (
     entries: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[],
@@ -641,17 +642,31 @@ export default function App() {
 
       {/* Main Responsive Content Column */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Compact Mobile Top Bar (< 1024px) */}
-        <header className="lg:hidden sticky top-0 z-30 h-12 px-4 bg-white/90 dark:bg-[#1C1C1E]/90 backdrop-blur-md border-b border-slate-200/80 dark:border-white/10 flex items-center justify-between">
-          <span className="text-base font-bold tracking-tight whitespace-nowrap">
-            FileLens Scan
-          </span>
-          <div className="flex items-center gap-1">
+        {/* Ultra-Compact Mobile Top Bar (< 1024px) */}
+        <header className="lg:hidden sticky top-0 z-30 h-11 px-3 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-white/10 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm font-bold tracking-tight whitespace-nowrap">
+              FileLens Scan
+            </span>
+            <span className="text-[11px] font-mono tabular-nums text-slate-400 dark:text-slate-500 truncate">
+              {documents.length} files
+            </span>
+          </div>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowDeviceIndexer(true)}
+              aria-label="Index entire device"
+              className="h-8 px-2 rounded-lg flex items-center gap-1 text-[11px] font-semibold text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/40"
+            >
+              <HardDrive className="w-3.5 h-3.5" />
+              <span>{deviceRoots.length > 0 ? `Sync (${deviceRoots.length})` : 'Device'}</span>
+            </button>
             <button
               type="button"
               onClick={() => setActiveTab('settings')}
               aria-label="Tools and Preferences"
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
                 activeTab === 'settings'
                   ? 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-950/40'
                   : 'text-slate-600 dark:text-slate-300'
@@ -665,7 +680,7 @@ export default function App() {
                 setPreferences((p) => ({ ...p, theme: p.theme === 'dark' ? 'light' : 'dark' }))
               }
               aria-label="Toggle light and dark theme"
-              className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-600 dark:text-slate-300"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 dark:text-slate-300"
             >
               {preferences.theme === 'dark' ? (
                 <Sun className="w-4 h-4" />
@@ -676,8 +691,8 @@ export default function App() {
           </div>
         </header>
 
-        {/* Scrollable Workspace Body */}
-        <main className="flex-1 px-4 sm:px-6 lg:px-8 py-5 sm:py-7 pb-24 lg:pb-10">
+        {/* Scrollable Workspace Body — Edge-to-edge tight padding on small mobile screens */}
+        <main className="flex-1 px-2.5 sm:px-6 lg:px-8 py-2 sm:py-5 pb-20 lg:pb-8">
           <div className="max-w-6xl mx-auto">
             {activeTab === 'documents' && (
               <DocumentsView
@@ -873,7 +888,7 @@ export default function App() {
                 }
                 onImportWorkspaceBackup={(json) => {
                   try {
-                    const parsed = JSON.parse(json) as Partial<PersistedState>;
+                    const parsed = JSON.parse(json) as Partial<PersistedVaultState>;
                     if (!Array.isArray(parsed.documents)) return false;
                     setDocuments(parsed.documents);
                     if (parsed.folders) setFolders(parsed.folders);
@@ -888,23 +903,17 @@ export default function App() {
                     return false;
                   }
                 }}
-                onResetDemoWorkspace={() => {
-                  setDocuments(
-                    INITIAL_DOCUMENTS.map((d) => ({
-                      ...d,
-                      ocrStatus: 'done',
-                      indexedAt: d.updatedAt,
-                      chunksCount: Math.max(1, d.pages.length),
-                    }))
-                  );
+                onClearWorkspace={() => {
+                  setDocuments([]);
                   setFolders(INITIAL_FOLDERS);
-                  setVoiceNotes(INITIAL_VOICE_NOTES);
-                  setSavedSearches(INITIAL_SAVED_SEARCHES);
+                  setVoiceNotes([]);
+                  setSavedSearches([]);
                   setSavedSignatures([]);
-                  setPreferences(DEFAULT_PREFERENCES);
                   setLastIndexSummary(null);
-                  localStorage.removeItem(STORAGE_KEY);
-                  showToast('Restored default sample documents');
+                  setDeviceRoots([]);
+                  void clearVaultState();
+                  void clearAllStoredDeviceRoots();
+                  showToast('Cleared local vault and device index');
                 }}
                 onToast={showToast}
               />
@@ -912,22 +921,22 @@ export default function App() {
           </div>
         </main>
 
-        {/* Mobile Fixed Bottom Navigation Bar with Centered Genius Scan Orange Camera FAB */}
+        {/* Compact Mobile Fixed Bottom Navigation Bar with Centered Genius Scan Orange Camera FAB */}
         <nav
           aria-label="Primary navigation"
           className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 dark:bg-[#1C1C1E]/95 backdrop-blur-md border-t border-slate-200/80 dark:border-white/10 pb-safe"
         >
-          <div className="grid grid-cols-5 items-center h-15 px-1">
+          <div className="grid grid-cols-5 items-center h-13 px-1">
             <MobileTabButton
               active={activeTab === 'documents'}
               label="Docs"
-              icon={<FileText className="w-5 h-5" />}
+              icon={<FileText className="w-4 h-4" />}
               onClick={() => setActiveTab('documents')}
             />
             <MobileTabButton
               active={activeTab === 'search'}
               label="Search"
-              icon={<Search className="w-5 h-5" />}
+              icon={<Search className="w-4 h-4" />}
               onClick={() => setActiveTab('search')}
             />
 
@@ -936,22 +945,22 @@ export default function App() {
                 type="button"
                 onClick={() => setScannerState({ open: true, mode: 'batch' })}
                 aria-label="Scan document"
-                className="-mt-5 w-13 h-13 rounded-full bg-orange-600 hover:bg-orange-700 active:scale-95 text-white shadow-lg shadow-orange-600/30 flex items-center justify-center border-4 border-[#F2F2F7] dark:border-[#000000] transition-transform"
+                className="-mt-4 w-12 h-12 rounded-full bg-orange-600 hover:bg-orange-700 active:scale-95 text-white shadow-lg shadow-orange-600/30 flex items-center justify-center border-[3px] border-[#F2F2F7] dark:border-[#000000] transition-transform"
               >
-                <Camera className="w-6 h-6" />
+                <Camera className="w-5 h-5" />
               </button>
             </div>
 
             <MobileTabButton
               active={activeTab === 'brain'}
               label="Brain"
-              icon={<Brain className="w-5 h-5" />}
+              icon={<Brain className="w-4 h-4" />}
               onClick={() => setActiveTab('brain')}
             />
             <MobileTabButton
               active={activeTab === 'cards'}
               label="Cards"
-              icon={<CreditCard className="w-5 h-5" />}
+              icon={<CreditCard className="w-4 h-4" />}
               onClick={() => setActiveTab('cards')}
             />
           </div>
@@ -1046,6 +1055,7 @@ export default function App() {
           onSyncSingleRoot={(rootId, filters) => void handleSyncSingleRoot(rootId, filters)}
           onRemoveRoot={(rootId) => void handleRemoveDeviceRoot(rootId)}
           onCancelIndexing={handleCancelIndexing}
+          onToast={showToast}
           onClose={() => setShowDeviceIndexer(false)}
         />
       )}
