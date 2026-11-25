@@ -49,6 +49,8 @@ export interface FileLensAndroidBridge {
   startLanServer?: () => string;
   stopLanServer?: () => void;
   getLanServerUrl?: () => string;
+  startVoiceCapture?: (langCode: string) => boolean;
+  stopVoiceCapture?: () => void;
 }
 
 export interface AndroidNativeFileMeta {

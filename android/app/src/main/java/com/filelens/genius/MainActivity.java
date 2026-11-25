@@ -12,6 +12,9 @@ import android.os.StatFs;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.Settings;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
@@ -47,6 +50,8 @@ public class MainActivity extends BridgeActivity {
     private final FileLensAndroidBridge androidBridge = new FileLensAndroidBridge();
     private boolean bridgeAttached = false;
     private LanHttpServer lanServer = null;
+    private SpeechRecognizer speechRecognizer = null;
+    private String pendingVoiceLang = "en-US";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -58,6 +63,14 @@ public class MainActivity extends BridgeActivity {
     public void onStart() {
         super.onStart();
         attachJsBridge();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1002 && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            androidBridge.startVoiceCapture(pendingVoiceLang);
+        }
     }
 
     private void attachJsBridge() {
@@ -258,6 +271,94 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public String getLanServerUrl() {
             return lanServer != null ? lanServer.getServerUrl() : "";
+        }
+
+        @JavascriptInterface
+        public boolean startVoiceCapture(String langCode) {
+            pendingVoiceLang = (langCode != null && !langCode.isEmpty()) ? langCode : "en-US";
+            if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    MainActivity.this,
+                    new String[]{Manifest.permission.RECORD_AUDIO},
+                    1002
+                );
+                return false;
+            }
+            runOnUiThread(() -> {
+                try {
+                    if (speechRecognizer != null) {
+                        speechRecognizer.destroy();
+                        speechRecognizer = null;
+                    }
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(MainActivity.this);
+                    speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                        @Override public void onReadyForSpeech(Bundle params) {}
+                        @Override public void onBeginningOfSpeech() {}
+                        @Override public void onRmsChanged(float rmsdB) {}
+                        @Override public void onBufferReceived(byte[] buffer) {}
+                        @Override public void onEvent(int eventType, Bundle params) {}
+
+                        @Override
+                        public void onPartialResults(Bundle partialResults) {
+                            ArrayList<String> list = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                            if (list != null && !list.isEmpty()) {
+                                dispatchVoiceEvent("filelens-voice-partial", list.get(0));
+                            }
+                        }
+
+                        @Override
+                        public void onResults(Bundle results) {
+                            ArrayList<String> list = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                            if (list != null && !list.isEmpty()) {
+                                dispatchVoiceEvent("filelens-voice-result", list.get(0));
+                            }
+                            dispatchVoiceEvent("filelens-voice-end", "");
+                        }
+
+                        @Override
+                        public void onError(int error) {
+                            dispatchVoiceEvent("filelens-voice-error", String.valueOf(error));
+                            dispatchVoiceEvent("filelens-voice-end", "");
+                        }
+
+                        @Override
+                        public void onEndOfSpeech() {}
+                    });
+
+                    Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, pendingVoiceLang);
+                    intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+                    intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+                    speechRecognizer.startListening(intent);
+                } catch (Exception e) {
+                    dispatchVoiceEvent("filelens-voice-error", "unavailable");
+                    dispatchVoiceEvent("filelens-voice-end", "");
+                }
+            });
+            return true;
+        }
+
+        @JavascriptInterface
+        public void stopVoiceCapture() {
+            runOnUiThread(() -> {
+                try {
+                    if (speechRecognizer != null) {
+                        speechRecognizer.stopListening();
+                    }
+                } catch (Exception ignored) {
+                }
+            });
+        }
+
+        private void dispatchVoiceEvent(String eventName, String text) {
+            final String safeText = JSONObject.quote(text != null ? text : "");
+            runOnUiThread(() -> {
+                if (getBridge() == null || getBridge().getWebView() == null) return;
+                String js = "window.dispatchEvent(new CustomEvent('" + eventName + "',{detail:{text:" + safeText + "}}));";
+                getBridge().getWebView().evaluateJavascript(js, null);
+            });
         }
 
         @JavascriptInterface

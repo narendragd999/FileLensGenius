@@ -67,6 +67,97 @@ export function computeQuadDelta(a: NormalizedQuad | null, b: NormalizedQuad | n
   ) / 8;
 }
 
+interface Line2D {
+  // Normal form: a*x + b*y + c = 0
+  a: number;
+  b: number;
+  c: number;
+}
+
+function fitLineRansac(
+  pts: { x: number; y: number; weight: number }[],
+  inlierDist = 3.2
+): Line2D | null {
+  if (pts.length < 4) return null;
+  let bestScore = -1;
+  let bestLine: Line2D | null = null;
+
+  // Deterministic pair sampling across sorted points (fast, zero randomness)
+  const step = Math.max(1, Math.floor(pts.length / 10));
+  for (let i = 0; i < pts.length; i += step) {
+    for (let j = i + step; j < pts.length; j += step) {
+      const p1 = pts[i];
+      const p2 = pts[j];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 8) continue;
+
+      const a = -dy / len;
+      const b = dx / len;
+      const c = -(a * p1.x + b * p1.y);
+
+      let score = 0;
+      for (let k = 0; k < pts.length; k++) {
+        const d = Math.abs(a * pts[k].x + b * pts[k].y + c);
+        if (d <= inlierDist) score += pts[k].weight;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestLine = { a, b, c };
+      }
+    }
+  }
+
+  if (!bestLine) return null;
+
+  // Weighted least-squares refinement over inliers
+  const inliers = pts.filter(
+    (p) => Math.abs(bestLine!.a * p.x + bestLine!.b * p.y + bestLine!.c) <= inlierDist
+  );
+  if (inliers.length < 3) return bestLine;
+
+  let wSum = 0;
+  let mx = 0;
+  let my = 0;
+  for (const p of inliers) {
+    wSum += p.weight;
+    mx += p.x * p.weight;
+    my += p.y * p.weight;
+  }
+  mx /= wSum;
+  my /= wSum;
+
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  for (const p of inliers) {
+    const dx = p.x - mx;
+    const dy = p.y - my;
+    sxx += p.weight * dx * dx;
+    syy += p.weight * dy * dy;
+    sxy += p.weight * dx * dy;
+  }
+
+  // Principal eigenvector of covariance gives line direction (vx, vy)
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const vx = Math.cos(theta);
+  const vy = Math.sin(theta);
+  const a = -vy;
+  const b = vx;
+  const c = -(a * mx + b * my);
+  return { a, b, c };
+}
+
+function intersectLines(l1: Line2D, l2: Line2D): { x: number; y: number } | null {
+  const det = l1.a * l2.b - l2.a * l1.b;
+  if (Math.abs(det) < 1e-6) return null;
+  return {
+    x: (l1.b * l2.c - l2.b * l1.c) / det,
+    y: (l2.a * l1.c - l1.a * l2.c) / det,
+  };
+}
+
 export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis {
   const width = canvas.width;
   const height = canvas.height;
@@ -80,197 +171,192 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
   const fingerprint = computeLumaFingerprint8x8(data, width, height);
   const totalPx = width * height;
 
-  // 1. Grayscale luminance + Sobel edge magnitude
-  const gray = new Float32Array(totalPx);
+  // 1. Luminance + Paper Whiteness score (high lum, low color saturation)
+  const rawGray = new Float32Array(totalPx);
+  const whiteness = new Float32Array(totalPx);
   for (let i = 0; i < totalPx; i++) {
     const p = i * 4;
-    gray[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+    const r = data[p];
+    const g = data[p + 1];
+    const b = data[p + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    rawGray[i] = lum;
+    whiteness[i] = lum - chroma * 0.85;
   }
 
-  const edge = new Float32Array(totalPx);
+  // 2. 3x3 Gaussian blur to suppress sensor & paper-grain noise
+  const gray = new Float32Array(totalPx);
   for (let y = 1; y < height - 1; y++) {
     const row = y * width;
     for (let x = 1; x < width - 1; x++) {
       const i = row + x;
-      const gx =
-        -gray[i - width - 1] +
-        gray[i - width + 1] -
-        2 * gray[i - 1] +
-        2 * gray[i + 1] -
-        gray[i + width - 1] +
-        gray[i + width + 1];
-      const gy =
-        -gray[i - width - 1] -
-        2 * gray[i - width] -
-        gray[i - width + 1] +
-        gray[i + width - 1] +
-        2 * gray[i + width] +
-        gray[i + width + 1];
-      edge[i] = Math.hypot(gx, gy) * 0.25;
+      gray[i] =
+        (rawGray[i - width - 1] +
+          2 * rawGray[i - width] +
+          rawGray[i - width + 1] +
+          2 * rawGray[i - 1] +
+          4 * rawGray[i] +
+          2 * rawGray[i + 1] +
+          rawGray[i + width - 1] +
+          2 * rawGray[i + width] +
+          rawGray[i + width + 1]) /
+        16;
     }
   }
 
-  // 2. Sample inner 28%x28% core and take 75th-percentile bright pixel as true Paper Color
-  const cx0 = Math.floor(width * 0.36);
-  const cx1 = Math.ceil(width * 0.64);
-  const cy0 = Math.floor(height * 0.36);
-  const cy1 = Math.ceil(height * 0.64);
-  const coreSamples: { lum: number; r: number; g: number; b: number; idx: number }[] = [];
-  for (let y = cy0; y < cy1; y++) {
-    for (let x = cx0; x < cx1; x++) {
-      const i = y * width + x;
-      const p = i * 4;
-      coreSamples.push({ lum: gray[i], r: data[p], g: data[p + 1], b: data[p + 2], idx: i });
+  const STRIPS = 28;
+  const stepProbe = 4;
+
+  const leftPts: { x: number; y: number; weight: number }[] = [];
+  const rightPts: { x: number; y: number; weight: number }[] = [];
+  const topPts: { x: number; y: number; weight: number }[] = [];
+  const bottomPts: { x: number; y: number; weight: number }[] = [];
+
+  // 3. Left & Right border scanlines (transition between outside desk <-> bright neutral paper)
+  for (let s = 0; s < STRIPS; s++) {
+    const y = Math.round(height * (0.16 + (0.68 * s) / (STRIPS - 1)));
+    const row = y * width;
+
+    // Left edge: scan from x = 3% to 44%
+    let bestLX = -1;
+    let bestLScore = 10;
+    for (let x = Math.max(stepProbe, Math.floor(width * 0.03)); x < Math.floor(width * 0.44); x++) {
+      const grad = gray[row + x + 2] - gray[row + x - 2];
+      if (grad <= 4) continue;
+      // Outside (left) must be darker/warmer than inside (right)
+      const outsideW = whiteness[row + x - stepProbe];
+      const insideW = whiteness[row + x + stepProbe];
+      const stepW = insideW - outsideW;
+      // Ensure inside looks like bright paper (> 125) and is a real boundary step
+      if (insideW > 115 && stepW > 6) {
+        const score = grad * 1.2 + stepW * 1.4;
+        if (score > bestLScore) {
+          bestLScore = score;
+          bestLX = x;
+        }
+      }
     }
+    if (bestLX > 0) leftPts.push({ x: bestLX, y, weight: bestLScore });
+
+    // Right edge: scan from x = 97% down to 56%
+    let bestRX = -1;
+    let bestRScore = 10;
+    for (
+      let x = Math.min(width - stepProbe - 1, Math.floor(width * 0.97));
+      x > Math.floor(width * 0.56);
+      x--
+    ) {
+      const grad = gray[row + x - 2] - gray[row + x + 2];
+      if (grad <= 4) continue;
+      const insideW = whiteness[row + x - stepProbe];
+      const outsideW = whiteness[row + x + stepProbe];
+      const stepW = insideW - outsideW;
+      if (insideW > 115 && stepW > 6) {
+        const score = grad * 1.2 + stepW * 1.4;
+        if (score > bestRScore) {
+          bestRScore = score;
+          bestRX = x;
+        }
+      }
+    }
+    if (bestRX > 0) rightPts.push({ x: bestRX, y, weight: bestRScore });
   }
-  coreSamples.sort((a, b) => a.lum - b.lum);
-  const pSample = coreSamples[Math.floor(coreSamples.length * 0.78)] ?? coreSamples[0];
-  if (!pSample) {
+
+  // 4. Top & Bottom border scanlines
+  for (let s = 0; s < STRIPS; s++) {
+    const x = Math.round(width * (0.18 + (0.64 * s) / (STRIPS - 1)));
+
+    // Top edge: scan from y = 3% to 44%
+    let bestTY = -1;
+    let bestTScore = 10;
+    for (
+      let y = Math.max(stepProbe, Math.floor(height * 0.03));
+      y < Math.floor(height * 0.44);
+      y++
+    ) {
+      const grad = gray[(y + 2) * width + x] - gray[(y - 2) * width + x];
+      if (grad <= 4) continue;
+      const outsideW = whiteness[(y - stepProbe) * width + x];
+      const insideW = whiteness[(y + stepProbe) * width + x];
+      const stepW = insideW - outsideW;
+      if (insideW > 115 && stepW > 6) {
+        const score = grad * 1.2 + stepW * 1.4;
+        if (score > bestTScore) {
+          bestTScore = score;
+          bestTY = y;
+        }
+      }
+    }
+    if (bestTY > 0) topPts.push({ x, y: bestTY, weight: bestTScore });
+
+    // Bottom edge: scan from y = 97% down to 56%
+    let bestBY = -1;
+    let bestBScore = 10;
+    for (
+      let y = Math.min(height - stepProbe - 1, Math.floor(height * 0.97));
+      y > Math.floor(height * 0.56);
+      y--
+    ) {
+      const grad = gray[(y - 2) * width + x] - gray[(y + 2) * width + x];
+      if (grad <= 4) continue;
+      const insideW = whiteness[(y - stepProbe) * width + x];
+      const outsideW = whiteness[(y + stepProbe) * width + x];
+      const stepW = insideW - outsideW;
+      if (insideW > 115 && stepW > 6) {
+        const score = grad * 1.2 + stepW * 1.4;
+        if (score > bestBScore) {
+          bestBScore = score;
+          bestBY = y;
+        }
+      }
+    }
+    if (bestBY > 0) bottomPts.push({ x, y: bestBY, weight: bestBScore });
+  }
+
+  // 5. RANSAC straight-line fit on each of the 4 paper borders
+  const lLeft = fitLineRansac(leftPts, 3.0);
+  const lRight = fitLineRansac(rightPts, 3.0);
+  const lTop = fitLineRansac(topPts, 3.0);
+  const lBottom = fitLineRansac(bottomPts, 3.0);
+
+  if (!lLeft || !lRight || !lTop || !lBottom) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
-  const paperR = pSample.r;
-  const paperG = pSample.g;
-  const paperB = pSample.b;
-  const paperLum = pSample.lum;
+  const pTL = intersectLines(lTop, lLeft);
+  const pTR = intersectLines(lTop, lRight);
+  const pBR = intersectLines(lBottom, lRight);
+  const pBL = intersectLines(lBottom, lLeft);
 
-  // 3. Build Paper Candidate Mask (pixels matching paper core color/brightness and not on a strong edge)
-  const cand = new Uint8Array(totalPx);
-  for (let y = 1; y < height - 1; y++) {
-    const row = y * width;
-    for (let x = 1; x < width - 1; x++) {
-      const i = row + x;
-      const p = i * 4;
-      const colorDiff =
-        Math.abs(data[p] - paperR) +
-        Math.abs(data[p + 1] - paperG) +
-        Math.abs(data[p + 2] - paperB);
-      const lumDiff = paperLum - gray[i];
-      if (colorDiff < 54 && lumDiff < 26 && edge[i] < 24) {
-        cand[i] = 1;
-      }
-    }
-  }
-
-  // 4. Center-seeded BFS Flood-Fill (flows around printed text, stops at desk/shadow border!)
-  const visited = new Uint8Array(totalPx);
-  const queue = new Int32Array(totalPx);
-  let qHead = 0;
-  let qTail = 0;
-
-  // Seed at brightest core pixel (guaranteed to be on paper, not on a text line)
-  const seedIdx = pSample.idx;
-  cand[seedIdx] = 1;
-  visited[seedIdx] = 1;
-  queue[qTail++] = seedIdx;
-
-  let fgCount = 0;
-  while (qHead < qTail) {
-    const curr = queue[qHead++];
-    fgCount++;
-    const x = curr % width;
-    const y = (curr / width) | 0;
-
-    if (x > 1) {
-      const n = curr - 1;
-      if (!visited[n] && cand[n]) {
-        visited[n] = 1;
-        queue[qTail++] = n;
-      }
-    }
-    if (x < width - 2) {
-      const n = curr + 1;
-      if (!visited[n] && cand[n]) {
-        visited[n] = 1;
-        queue[qTail++] = n;
-      }
-    }
-    if (y > 1) {
-      const n = curr - width;
-      if (!visited[n] && cand[n]) {
-        visited[n] = 1;
-        queue[qTail++] = n;
-      }
-    }
-    if (y < height - 2) {
-      const n = curr + width;
-      if (!visited[n] && cand[n]) {
-        visited[n] = 1;
-        queue[qTail++] = n;
-      }
-    }
-  }
-
-  const areaRatio = fgCount / totalPx;
-  if (areaRatio < 0.12 || areaRatio > 0.94) {
+  if (!pTL || !pTR || !pBR || !pBL) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
-  // 5. Extract 4 extreme corners (x+y, x-y) of ONLY the center-connected paper component
-  let minSum = Infinity;
-  let maxSum = -Infinity;
-  let minDiff = Infinity;
-  let maxDiff = -Infinity;
-
-  let tlX = width * 0.1;
-  let tlY = height * 0.1;
-  let brX = width * 0.9;
-  let brY = height * 0.9;
-  let trX = width * 0.9;
-  let trY = height * 0.1;
-  let blX = width * 0.1;
-  let blY = height * 0.9;
-
-  for (let y = 2; y < height - 2; y++) {
-    const row = y * width;
-    for (let x = 2; x < width - 2; x++) {
-      if (!visited[row + x]) continue;
-      const sum = x + y;
-      const diff = x - y;
-      if (sum < minSum) {
-        minSum = sum;
-        tlX = x;
-        tlY = y;
-      }
-      if (sum > maxSum) {
-        maxSum = sum;
-        brX = x;
-        brY = y;
-      }
-      if (diff > maxDiff) {
-        maxDiff = diff;
-        trX = x;
-        trY = y;
-      }
-      if (diff < minDiff) {
-        minDiff = diff;
-        blX = x;
-        blY = y;
-      }
-    }
-  }
-
+  // Tiny 1% outward margin so edge text is never clipped
+  const pad = 0.01;
   const quad: NormalizedQuad = {
-    tlX: Math.max(0.02, Math.min(0.48, tlX / width)),
-    tlY: Math.max(0.02, Math.min(0.48, tlY / height)),
-    trX: Math.max(0.52, Math.min(0.98, trX / width)),
-    trY: Math.max(0.02, Math.min(0.48, trY / height)),
-    brX: Math.max(0.52, Math.min(0.98, brX / width)),
-    brY: Math.max(0.52, Math.min(0.98, brY / height)),
-    blX: Math.max(0.02, Math.min(0.48, blX / width)),
-    blY: Math.max(0.52, Math.min(0.98, blY / height)),
+    tlX: Math.max(0.01, Math.min(0.48, pTL.x / width - pad)),
+    tlY: Math.max(0.01, Math.min(0.48, pTL.y / height - pad)),
+    trX: Math.max(0.52, Math.min(0.99, pTR.x / width + pad)),
+    trY: Math.max(0.01, Math.min(0.48, pTR.y / height - pad)),
+    brX: Math.max(0.52, Math.min(0.99, pBR.x / width + pad)),
+    brY: Math.max(0.52, Math.min(0.99, pBR.y / height + pad)),
+    blX: Math.max(0.01, Math.min(0.48, pBL.x / width - pad)),
+    blY: Math.max(0.52, Math.min(0.99, pBL.y / height + pad)),
   };
 
-  // Sanity check quad width & height
   const topW = quad.trX - quad.tlX;
   const botW = quad.brX - quad.blX;
   const leftH = quad.blY - quad.tlY;
   const rightH = quad.brY - quad.trY;
-  if (topW < 0.28 || botW < 0.28 || leftH < 0.28 || rightH < 0.28) {
+  if (topW < 0.25 || botW < 0.25 || leftH < 0.25 || rightH < 0.25) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
-  const confidence = Math.min(0.96, Math.max(0.62, areaRatio * 1.4));
+  const coverage =
+    (leftPts.length + rightPts.length + topPts.length + bottomPts.length) / (STRIPS * 4);
+  const confidence = Math.min(0.97, Math.max(0.6, coverage));
   return { quad, confidence, fingerprint };
 }
 

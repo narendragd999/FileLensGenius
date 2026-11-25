@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   Calendar,
@@ -105,6 +105,36 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
 
+  useEffect(() => {
+    const onPartial = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (text) setDraftText(text);
+    };
+    const onResult = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (text) setDraftText(text);
+      setIsListening(false);
+    };
+    const onEnd = () => setIsListening(false);
+    const onErr = (e: Event) => {
+      setIsListening(false);
+      const code = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (code !== '7' && code !== '6') {
+        onToast('Microphone capture paused — tap mic to retry or type directly');
+      }
+    };
+    window.addEventListener('filelens-voice-partial', onPartial);
+    window.addEventListener('filelens-voice-result', onResult);
+    window.addEventListener('filelens-voice-end', onEnd);
+    window.addEventListener('filelens-voice-error', onErr);
+    return () => {
+      window.removeEventListener('filelens-voice-partial', onPartial);
+      window.removeEventListener('filelens-voice-result', onResult);
+      window.removeEventListener('filelens-voice-end', onEnd);
+      window.removeEventListener('filelens-voice-error', onErr);
+    };
+  }, [onToast]);
+
   const counts = useMemo(
     () => ({
       today: notes.filter((n) => n.temporalClass === 'today').length,
@@ -137,8 +167,22 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
 
   const toggleVoiceCapture = () => {
     if (isListening) {
-      recognitionRef.current?.stop();
+      if (window.FileLensAndroid?.stopVoiceCapture) {
+        window.FileLensAndroid.stopVoiceCapture();
+      } else {
+        recognitionRef.current?.stop();
+      }
       setIsListening(false);
+      return;
+    }
+
+    if (window.FileLensAndroid?.startVoiceCapture) {
+      const started = window.FileLensAndroid.startVoiceCapture(voiceLanguage);
+      if (started) {
+        setIsListening(true);
+      } else {
+        onToast('Allow Microphone permission to start voice capture');
+      }
       return;
     }
 
