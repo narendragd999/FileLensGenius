@@ -152,6 +152,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const lastCapturedFpRef = useRef<Float32Array | null>(null);
   const latestFpRef = useRef<Float32Array | null>(null);
   const waitingPageSwapRef = useRef<boolean>(false);
+  const shutterAudioCtxRef = useRef<AudioContext | null>(null);
   const lastAutoShotMsRef = useRef<number>(0);
   const captureLockRef = useRef<boolean>(false);
 
@@ -359,6 +360,65 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     [searchableOcr]
   );
 
+  const playShutterSound = useCallback(() => {
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!shutterAudioCtxRef.current || shutterAudioCtxRef.current.state === 'closed') {
+        shutterAudioCtxRef.current = new AudioCtx();
+      }
+      const audioCtx = shutterAudioCtxRef.current;
+      if (audioCtx.state === 'suspended') {
+        void audioCtx.resume();
+      }
+      const now = audioCtx.currentTime;
+
+      // Crisp two-stage mechanical camera shutter click (noise burst + short click)
+      const bufferSize = Math.floor(audioCtx.sampleRate * 0.045);
+      const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const output = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        const env = i < bufferSize * 0.28 ? 1 : Math.exp(-(i - bufferSize * 0.28) / (bufferSize * 0.22));
+        output[i] = (Math.random() * 2 - 1) * env;
+      }
+
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = noiseBuffer;
+
+      const bandpass = audioCtx.createBiquadFilter();
+      bandpass.type = 'bandpass';
+      bandpass.frequency.setValueAtTime(1850, now);
+      bandpass.Q.setValueAtTime(1.4, now);
+
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.32, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+
+      noise.connect(bandpass);
+      bandpass.connect(gain);
+      gain.connect(audioCtx.destination);
+      noise.start(now);
+      noise.stop(now + 0.048);
+
+      // Subtle second leaf-shutter click 28ms later
+      const osc = audioCtx.createOscillator();
+      const oscGain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(920, now + 0.028);
+      osc.frequency.exponentialRampToValueAtTime(280, now + 0.055);
+      oscGain.gain.setValueAtTime(0.14, now + 0.028);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.058);
+      osc.connect(oscGain);
+      oscGain.connect(audioCtx.destination);
+      osc.start(now + 0.028);
+      osc.stop(now + 0.06);
+    } catch {
+      // Audio playback is optional and must never block scanning
+    }
+  }, []);
+
   // REAL Live Frame Capture directly from <video> hardware stream!
   const captureLiveVideoFrame = useCallback(
     async (quadOverride?: NormalizedQuad | null) => {
@@ -370,6 +430,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       if (captureLockRef.current) return;
       captureLockRef.current = true;
 
+      playShutterSound();
       setShutterFlash(true);
       setTimeout(() => setShutterFlash(false), 140);
 

@@ -714,7 +714,8 @@ function scoreQuadCandidate(
   gradMag: Float32Array,
   w: number,
   h: number,
-  centerPaperRef: number
+  centerPaperRef: number,
+  closedColorMatch: Float32Array | null = null
 ): number {
   const [tl, tr, br, bl] = corners;
 
@@ -839,9 +840,13 @@ function scoreQuadCandidate(
       const outX = Math.max(0, Math.min(w - 1, Math.round(px - nx * 5)));
       const outY = Math.max(0, Math.min(h - 1, Math.round(py - ny * 5)));
       const stepW = closedWhite[inY * w + inX] - closedWhite[outY * w + outX];
+      const stepColor = closedColorMatch
+        ? closedColorMatch[inY * w + inX] - closedColorMatch[outY * w + outX]
+        : 0;
+      const effectiveStep = Math.max(stepW, stepColor * 0.3);
 
-      if (localMaxGrad > 8 || stepW > 4) edgeHits++;
-      if (stepW > 0) contrastSum += Math.min(16, stepW);
+      if (localMaxGrad > 8 || stepW > 4 || stepColor > 18) edgeHits++;
+      if (effectiveStep > 0) contrastSum += Math.min(16, effectiveStep);
     }
 
     const hitRatio = validSamples > 0 ? edgeHits / validSamples : 0.4;
@@ -855,9 +860,11 @@ function scoreQuadCandidate(
   const edgeQuality = edgeSupportSum / 4;
   if (edgeQuality < 0.22) return 0;
 
-  // Interior paper uniformity check: reject quads that swallow dark keyboards/desks
+  // Interior paper uniformity check: reject quads that swallow dark keyboards/desks or non-white backgrounds
   let interiorHits = 0;
   let interiorDark = 0;
+  let interiorColorHits = 0;
+  let interiorColorMisses = 0;
   let interiorTotal = 0;
   const darkCutoff = Math.max(55, centerPaperRef - 36);
   const paperCutoff = Math.max(80, centerPaperRef - 24);
@@ -871,14 +878,24 @@ function scoreQuadCandidate(
       const botY = bl.y + (br.y - bl.y) * u;
       const sx = Math.max(0, Math.min(w - 1, Math.round(topX + (botX - topX) * v)));
       const sy = Math.max(0, Math.min(h - 1, Math.round(topY + (botY - topY) * v)));
-      const val = closedWhite[sy * w + sx];
+      const idx = sy * w + sx;
+      const val = closedWhite[idx];
       interiorTotal++;
       if (val >= paperCutoff) interiorHits++;
       if (val < darkCutoff) interiorDark++;
+      if (closedColorMatch) {
+        const cm = closedColorMatch[idx];
+        if (cm >= 165) interiorColorHits++;
+        if (cm < 130) interiorColorMisses++;
+      }
     }
   }
   if (interiorTotal > 0 && interiorDark / interiorTotal > 0.28) return 0;
-  const interiorQuality = interiorTotal > 0 ? interiorHits / interiorTotal : 0.7;
+  if (closedColorMatch && interiorTotal > 0 && interiorColorMisses / interiorTotal > 0.30) return 0;
+  const lumInterior = interiorTotal > 0 ? interiorHits / interiorTotal : 0.7;
+  const colorInterior =
+    closedColorMatch && interiorTotal > 0 ? interiorColorHits / interiorTotal : lumInterior;
+  const interiorQuality = closedColorMatch ? lumInterior * 0.55 + colorInterior * 0.45 : lumInterior;
 
   const shapeQuality = (angleQuality + wRatio + hRatio) / 3;
   const areaBonus = Math.min(1, areaRatio / 0.55);
@@ -991,13 +1008,62 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
     rawGray[i] = lum;
-    whiteness[i] = Math.max(0, lum - chroma * 0.75);
+    whiteness[i] = Math.max(0, lum - chroma * 1.15);
   }
 
   // 2. Morphological Closing (3x3 in live preview for 60fps, 5x5 on capture for maximum accuracy)
   const closeRadius = fastMode ? 1 : 2;
   const closedGray = morphClose(rawGray, width, height, closeRadius);
   const closedWhite = morphClose(whiteness, width, height, closeRadius);
+
+  // 2a. Standard White-Page Background Color Profile (center-seeded RGB + low-chroma priority)
+  const cy0 = Math.floor(height * 0.36);
+  const cy1 = Math.floor(height * 0.64);
+  const cx0 = Math.floor(width * 0.36);
+  const cx1 = Math.floor(width * 0.64);
+  const centerR: number[] = [];
+  const centerG: number[] = [];
+  const centerB: number[] = [];
+  for (let y = cy0; y < cy1; y += 2) {
+    for (let x = cx0; x < cx1; x += 2) {
+      const p = (y * width + x) * 4;
+      const r = data[p];
+      const g = data[p + 1];
+      const b = data[p + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      if (lum >= 115 && chroma <= 38) {
+        centerR.push(r);
+        centerG.push(g);
+        centerB.push(b);
+      }
+    }
+  }
+  let closedColorMatch: Float32Array | null = null;
+  if (centerR.length >= 16) {
+    centerR.sort((a, b) => a - b);
+    centerG.sort((a, b) => a - b);
+    centerB.sort((a, b) => a - b);
+    const refIdx = Math.floor(centerR.length * 0.65);
+    const refR = centerR[refIdx];
+    const refG = centerG[refIdx];
+    const refB = centerB[refIdx];
+    const refLum = 0.299 * refR + 0.587 * refG + 0.114 * refB;
+    const refChroma = Math.max(refR, refG, refB) - Math.min(refR, refG, refB);
+    if (refLum >= 120 && refChroma <= 36) {
+      const colorMatch = new Float32Array(totalPx);
+      for (let i = 0; i < totalPx; i++) {
+        const p = i * 4;
+        const r = data[p];
+        const g = data[p + 1];
+        const b = data[p + 2];
+        const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+        const colorDist = (Math.abs(r - refR) + Math.abs(g - refG) + Math.abs(b - refB)) / 3;
+        colorMatch[i] = Math.max(0, 255 - colorDist * 2.4 - chroma * 0.8);
+      }
+      closedColorMatch = morphClose(colorMatch, width, height, closeRadius);
+    }
+  }
 
   // 2b. Local Illumination Normalization (cancels desk shadows & uneven lighting)
   const localBg = fastBoxBlur(closedGray, width, height, fastMode ? 10 : 14);
@@ -1035,10 +1101,6 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
   // 4. Generate candidate quads from Otsu + center-seeded paper thresholds (separates white paper from grey desks)
   const otsu = computeOtsuThreshold(closedWhite);
   const centerSamples: number[] = [];
-  const cy0 = Math.floor(height * 0.36);
-  const cy1 = Math.floor(height * 0.64);
-  const cx0 = Math.floor(width * 0.36);
-  const cx1 = Math.floor(width * 0.64);
   for (let y = cy0; y < cy1; y += 2) {
     for (let x = cx0; x < cx1; x += 2) {
       centerSamples.push(closedWhite[y * width + x]);
@@ -1067,6 +1129,12 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     const c = detectQuadFromComponent(closedWhite, gradMag, width, height, t);
     if (c) candidates.push({ corners: c, bonus: 0 });
   }
+  if (closedColorMatch) {
+    for (const ct of [175, 195]) {
+      const cColor = detectQuadFromComponent(closedColorMatch, gradMag, width, height, ct);
+      if (cColor) candidates.push({ corners: cColor, bonus: 0.05 });
+    }
+  }
   const normOtsu = computeOtsuThreshold(shadowNormWhite);
   const cNorm = detectQuadFromComponent(shadowNormWhite, gradMag, width, height, normOtsu);
   if (cNorm) candidates.push({ corners: cNorm, bonus: 0 });
@@ -1077,7 +1145,15 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
   let bestCorners: [Pt, Pt, Pt, Pt] | null = null;
   let bestScore = 0;
   for (const cand of candidates) {
-    const base = scoreQuadCandidate(cand.corners, closedWhite, gradMag, width, height, centerPaperRef);
+    const base = scoreQuadCandidate(
+      cand.corners,
+      closedWhite,
+      gradMag,
+      width,
+      height,
+      centerPaperRef,
+      closedColorMatch
+    );
     const s = base > 0 ? base + cand.bonus : 0;
     if (s > bestScore) {
       bestScore = s;
@@ -1091,7 +1167,15 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
 
   // Snap edges outward to true paper-to-desk gradient so shaded margins are never clipped
   const snapped = snapQuadToOuterPaperBoundary(bestCorners, closedWhite, gradMag, width, height);
-  const snappedScore = scoreQuadCandidate(snapped, closedWhite, gradMag, width, height, centerPaperRef);
+  const snappedScore = scoreQuadCandidate(
+    snapped,
+    closedWhite,
+    gradMag,
+    width,
+    height,
+    centerPaperRef,
+    closedColorMatch
+  );
   const finalCorners = snappedScore >= bestScore * 0.88 ? snapped : bestCorners;
 
   const [pTL, pTR, pBR, pBL] = finalCorners;
