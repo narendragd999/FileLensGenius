@@ -634,8 +634,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
     if (!analysisCanvasRef.current) {
       analysisCanvasRef.current = document.createElement('canvas');
-      analysisCanvasRef.current.width = 160;
-      analysisCanvasRef.current.height = 214;
+      analysisCanvasRef.current.width = 240;
+      analysisCanvasRef.current.height = 320;
     }
 
     let missedFrames = 0;

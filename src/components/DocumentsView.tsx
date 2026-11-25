@@ -208,8 +208,10 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
 
   return (
     <div className="space-y-2 sm:space-y-3">
-      {/* Desktop-only compact title row (hidden on small mobile screens to maximize document list space) */}
-      <div className="hidden sm:flex items-center justify-between gap-3">
+      {/* Pinned Top Controls (Search, Filters, Indexing Bar) — only file list below scrolls */}
+      <div className="sticky -top-2 sm:-top-4 z-20 -mx-2.5 sm:-mx-6 lg:-mx-8 px-2.5 sm:px-6 lg:px-8 pt-2 sm:pt-4 pb-2 bg-[#F2F2F7]/95 dark:bg-[#0D0D0F]/95 backdrop-blur-md border-b border-slate-200/70 dark:border-white/10 space-y-2 sm:space-y-2.5">
+        {/* Desktop-only compact title row (hidden on small mobile screens to maximize document list space) */}
+        <div className="hidden sm:flex items-center justify-between gap-3">
         <div className="flex items-baseline gap-2.5">
           <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
             Documents
@@ -479,6 +481,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           </div>
         </div>
       )}
+      </div>
 
       {/* Documents List / Grid */}
       {filteredDocs.length === 0 ? (

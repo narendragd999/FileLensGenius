@@ -1228,10 +1228,21 @@ public class MainActivity extends BridgeActivity {
                         : PendingIntent.FLAG_UPDATE_CURRENT
                 );
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, fireMs, pi);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    Intent showIntent = new Intent(MainActivity.this, MainActivity.class);
+                    PendingIntent showPi = PendingIntent.getActivity(
+                        MainActivity.this,
+                        reqCode + 100000,
+                        showIntent,
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                            ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+                            : PendingIntent.FLAG_UPDATE_CURRENT
+                    );
+                    am.setAlarmClock(new AlarmManager.AlarmClockInfo(fireMs, showPi), pi);
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, fireMs, pi);
                 } else {
-                    am.set(AlarmManager.RTC_WAKEUP, fireMs, pi);
+                    am.setExact(AlarmManager.RTC_WAKEUP, fireMs, pi);
                 }
                 return true;
             } catch (Exception e) {

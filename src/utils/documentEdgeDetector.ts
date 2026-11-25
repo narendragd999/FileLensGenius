@@ -627,49 +627,85 @@ function detectQuadCenterOutward(
   closedColorMatch: Float32Array | null = null
 ): [Pt, Pt, Pt, Pt] | null {
   const STRIPS = 26;
-  const cx = Math.floor(w * 0.5);
-  const cy = Math.floor(h * 0.5);
   const probe = 4;
+  const farProbe = 8;
+
+  // Smart seed: find the brightest white-paper patch in [0.25..0.75] so off-center/distant pages still seed inside the sheet
+  let cx = Math.floor(w * 0.5);
+  let cy = Math.floor(h * 0.5);
+  let bestSeedScore = -1;
+  const stepY = Math.max(4, Math.floor(h * 0.04));
+  const stepX = Math.max(4, Math.floor(w * 0.04));
+  for (let sy = Math.floor(h * 0.25); sy <= Math.floor(h * 0.75); sy += stepY) {
+    for (let sx = Math.floor(w * 0.25); sx <= Math.floor(w * 0.75); sx += stepX) {
+      const idx = sy * w + sx;
+      const distPenalty = Math.hypot(sx / w - 0.5, sy / h - 0.5) * 35;
+      const sc =
+        closedWhite[idx] +
+        (closedColorMatch ? closedColorMatch[idx] * 0.6 : 0) -
+        distPenalty;
+      if (sc > bestSeedScore) {
+        bestSeedScore = sc;
+        cx = sx;
+        cy = sy;
+      }
+    }
+  }
 
   const leftPts: { x: number; y: number; weight: number }[] = [];
   const rightPts: { x: number; y: number; weight: number }[] = [];
   const topPts: { x: number; y: number; weight: number }[] = [];
   const bottomPts: { x: number; y: number; weight: number }[] = [];
 
+  const yMin = Math.max(farProbe + 2, Math.round(cy - h * 0.26));
+  const yMax = Math.min(h - farProbe - 3, Math.round(cy + h * 0.26));
+  const xMin = Math.max(farProbe + 2, Math.round(cx - w * 0.28));
+  const xMax = Math.min(w - farProbe - 3, Math.round(cx + w * 0.28));
+
   for (let s = 0; s < STRIPS; s++) {
-    const y = Math.round(h * (0.22 + (0.56 * s) / (STRIPS - 1)));
+    const y = Math.round(yMin + ((yMax - yMin) * s) / (STRIPS - 1));
     const row = y * w;
 
-    // Walk Left from center -> 2%
-    for (let x = cx - Math.floor(w * 0.06); x >= Math.max(probe + 2, Math.floor(w * 0.02)); x--) {
+    // Walk Left from seed -> 2%
+    for (let x = cx - Math.floor(w * 0.04); x >= Math.max(farProbe + 2, Math.floor(w * 0.02)); x--) {
       const grad = closedGray[row + x + 2] - closedGray[row + x - 2];
       const inW = closedWhite[row + x + probe];
       const outW = closedWhite[row + x - probe];
+      const outFarW = closedWhite[row + x - farProbe];
       const stepW = inW - outW;
       const inC = closedColorMatch ? closedColorMatch[row + x + probe] : 0;
       const outC = closedColorMatch ? closedColorMatch[row + x - probe] : 0;
+      const outFarC = closedColorMatch ? closedColorMatch[row + x - farProbe] : 0;
       const stepC = inC - outC;
+      const leavesPaper =
+        outFarW < centerPaperRef - 16 || (closedColorMatch !== null && outFarC < 168);
       if (
-        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
-        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+        leavesPaper &&
+        ((inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+          (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2))
       ) {
         leftPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
       }
     }
 
-    // Walk Right from center -> 98%
-    for (let x = cx + Math.floor(w * 0.06); x <= Math.min(w - probe - 3, Math.floor(w * 0.98)); x++) {
+    // Walk Right from seed -> 98%
+    for (let x = cx + Math.floor(w * 0.04); x <= Math.min(w - farProbe - 3, Math.floor(w * 0.98)); x++) {
       const grad = closedGray[row + x - 2] - closedGray[row + x + 2];
       const inW = closedWhite[row + x - probe];
       const outW = closedWhite[row + x + probe];
+      const outFarW = closedWhite[row + x + farProbe];
       const stepW = inW - outW;
       const inC = closedColorMatch ? closedColorMatch[row + x - probe] : 0;
       const outC = closedColorMatch ? closedColorMatch[row + x + probe] : 0;
+      const outFarC = closedColorMatch ? closedColorMatch[row + x + farProbe] : 0;
       const stepC = inC - outC;
+      const leavesPaper =
+        outFarW < centerPaperRef - 16 || (closedColorMatch !== null && outFarC < 168);
       if (
-        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
-        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+        leavesPaper &&
+        ((inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+          (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2))
       ) {
         rightPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
@@ -678,38 +714,48 @@ function detectQuadCenterOutward(
   }
 
   for (let s = 0; s < STRIPS; s++) {
-    const x = Math.round(w * (0.20 + (0.60 * s) / (STRIPS - 1)));
+    const x = Math.round(xMin + ((xMax - xMin) * s) / (STRIPS - 1));
 
-    // Walk Top from center -> 2%
-    for (let y = cy - Math.floor(h * 0.06); y >= Math.max(probe + 2, Math.floor(h * 0.02)); y--) {
+    // Walk Top from seed -> 2%
+    for (let y = cy - Math.floor(h * 0.04); y >= Math.max(farProbe + 2, Math.floor(h * 0.02)); y--) {
       const grad = closedGray[(y + 2) * w + x] - closedGray[(y - 2) * w + x];
       const inW = closedWhite[(y + probe) * w + x];
       const outW = closedWhite[(y - probe) * w + x];
+      const outFarW = closedWhite[(y - farProbe) * w + x];
       const stepW = inW - outW;
       const inC = closedColorMatch ? closedColorMatch[(y + probe) * w + x] : 0;
       const outC = closedColorMatch ? closedColorMatch[(y - probe) * w + x] : 0;
+      const outFarC = closedColorMatch ? closedColorMatch[(y - farProbe) * w + x] : 0;
       const stepC = inC - outC;
+      const leavesPaper =
+        outFarW < centerPaperRef - 16 || (closedColorMatch !== null && outFarC < 168);
       if (
-        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
-        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+        leavesPaper &&
+        ((inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+          (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2))
       ) {
         topPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
       }
     }
 
-    // Walk Bottom from center -> 98%
-    for (let y = cy + Math.floor(h * 0.06); y <= Math.min(h - probe - 3, Math.floor(h * 0.98)); y++) {
+    // Walk Bottom from seed -> 98%
+    for (let y = cy + Math.floor(h * 0.04); y <= Math.min(h - farProbe - 3, Math.floor(h * 0.98)); y++) {
       const grad = closedGray[(y - 2) * w + x] - closedGray[(y + 2) * w + x];
       const inW = closedWhite[(y - probe) * w + x];
       const outW = closedWhite[(y + probe) * w + x];
+      const outFarW = closedWhite[(y + farProbe) * w + x];
       const stepW = inW - outW;
       const inC = closedColorMatch ? closedColorMatch[(y - probe) * w + x] : 0;
       const outC = closedColorMatch ? closedColorMatch[(y + probe) * w + x] : 0;
+      const outFarC = closedColorMatch ? closedColorMatch[(y + farProbe) * w + x] : 0;
       const stepC = inC - outC;
+      const leavesPaper =
+        outFarW < centerPaperRef - 16 || (closedColorMatch !== null && outFarC < 168);
       if (
-        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
-        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+        leavesPaper &&
+        ((inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+          (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2))
       ) {
         bottomPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
@@ -1151,7 +1197,7 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
   centerSamples.sort((a, b) => a - b);
   const centerPaperRef =
     centerSamples.length > 0
-      ? centerSamples[Math.floor(centerSamples.length * 0.65)]
+      ? centerSamples[Math.floor(centerSamples.length * 0.78)]
       : 170;
 
   const thresholds = Array.from(
