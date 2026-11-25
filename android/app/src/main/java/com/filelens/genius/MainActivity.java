@@ -15,6 +15,8 @@ import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
+import android.provider.AlarmClock;
+import android.provider.CalendarContract;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
@@ -71,6 +73,7 @@ public class MainActivity extends BridgeActivity {
     private final FileLensAndroidBridge androidBridge = new FileLensAndroidBridge();
     private boolean bridgeAttached = false;
     private LanHttpServer lanServer = null;
+    private LanFtpServer ftpServer = null;
     private SpeechRecognizer speechRecognizer = null;
     private String pendingVoiceLang = "en-US";
     private String pendingShareJson = null;
@@ -761,35 +764,68 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
-        public String extractTextWithMlKit(String imageDataUrl, String lang) {
-            if (imageDataUrl == null || imageDataUrl.isEmpty()) return "";
-            try {
-                String b64 = imageDataUrl;
-                int comma = b64.indexOf(',');
-                if (comma >= 0) b64 = b64.substring(comma + 1);
-                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
-                Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-                if (bmp == null) return "";
-
-                InputImage image = InputImage.fromBitmap(bmp, 0);
-                boolean useDevanagari = lang != null && (lang.contains("hin") || lang.contains("hi") || lang.contains("dev"));
-                TextRecognizer primary = useDevanagari
-                    ? TextRecognition.getClient(new DevanagariTextRecognizerOptions.Builder().build())
-                    : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-
-                Text result = Tasks.await(primary.process(image), 12, TimeUnit.SECONDS);
-                String text = result != null && result.getText() != null ? result.getText().trim() : "";
-
-                if (text.isEmpty() && useDevanagari) {
-                    TextRecognizer fallback = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-                    Text fbRes = Tasks.await(fallback.process(image), 8, TimeUnit.SECONDS);
-                    if (fbRes != null && fbRes.getText() != null) text = fbRes.getText().trim();
-                }
-                bmp.recycle();
-                return text;
-            } catch (Exception e) {
-                return "";
+        public void extractTextWithMlKitAsync(String requestId, String imageDataUrl, String lang) {
+            if (imageDataUrl == null || imageDataUrl.isEmpty()) {
+                dispatchMlKitOcrResult(requestId, "");
+                return;
             }
+            scanExecutor.execute(() -> {
+                try {
+                    String b64 = imageDataUrl;
+                    int comma = b64.indexOf(',');
+                    if (comma >= 0) b64 = b64.substring(comma + 1);
+                    byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                    Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (bmp == null) {
+                        dispatchMlKitOcrResult(requestId, "");
+                        return;
+                    }
+                    InputImage image = InputImage.fromBitmap(bmp, 0);
+                    boolean useDevanagari = lang != null && (lang.contains("hin") || lang.contains("hi") || lang.contains("dev"));
+                    TextRecognizer primary = useDevanagari
+                        ? TextRecognition.getClient(new DevanagariTextRecognizerOptions.Builder().build())
+                        : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+
+                    primary.process(image)
+                        .addOnSuccessListener(result -> {
+                            String text = result != null && result.getText() != null ? result.getText().trim() : "";
+                            if (text.isEmpty() && useDevanagari) {
+                                TextRecognizer fallback = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+                                fallback.process(image)
+                                    .addOnSuccessListener(fb -> {
+                                        bmp.recycle();
+                                        dispatchMlKitOcrResult(requestId, fb != null && fb.getText() != null ? fb.getText().trim() : "");
+                                    })
+                                    .addOnFailureListener(e -> {
+                                        bmp.recycle();
+                                        dispatchMlKitOcrResult(requestId, "");
+                                    });
+                            } else {
+                                bmp.recycle();
+                                dispatchMlKitOcrResult(requestId, text);
+                            }
+                        })
+                        .addOnFailureListener(e -> {
+                            bmp.recycle();
+                            dispatchMlKitOcrResult(requestId, "");
+                        });
+                } catch (Exception e) {
+                    dispatchMlKitOcrResult(requestId, "");
+                }
+            });
+        }
+
+        private void dispatchMlKitOcrResult(String requestId, String text) {
+            final String safeId = JSONObject.quote(requestId != null ? requestId : "");
+            final String safeText = JSONObject.quote(text != null ? text : "");
+            runOnUiThread(() -> {
+                if (getBridge() == null || getBridge().getWebView() == null) return;
+                getBridge().getWebView().evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('filelens-mlkit-ocr-result',{detail:{requestId:" +
+                        safeId + ",text:" + safeText + "}}));",
+                    null
+                );
+            });
         }
 
         @JavascriptInterface
@@ -815,6 +851,100 @@ public class MainActivity extends BridgeActivity {
                     } catch (Exception ignored) {
                     }
                 });
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String startFtpServer() {
+            try {
+                if (ftpServer == null) {
+                    ftpServer = new LanFtpServer(Environment.getExternalStorageDirectory(), 2121);
+                }
+                return ftpServer.start();
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void stopFtpServer() {
+            try {
+                if (ftpServer != null) ftpServer.stop();
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public String getFtpServerUrl() {
+            return (ftpServer != null && ftpServer.isRunning()) ? ftpServer.getFtpUrl() : "";
+        }
+
+        @JavascriptInterface
+        public void startBackgroundService(String title, String body, int progress, int max) {
+            try {
+                Intent svc = new Intent(MainActivity.this, FileLensBackgroundService.class);
+                svc.setAction(FileLensBackgroundService.ACTION_START);
+                svc.putExtra(FileLensBackgroundService.EXTRA_TITLE, title);
+                svc.putExtra(FileLensBackgroundService.EXTRA_BODY, body);
+                svc.putExtra(FileLensBackgroundService.EXTRA_PROGRESS, progress);
+                svc.putExtra(FileLensBackgroundService.EXTRA_MAX, max);
+                ContextCompat.startForegroundService(MainActivity.this, svc);
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public void updateBackgroundService(String title, String body, int progress, int max) {
+            try {
+                Intent svc = new Intent(MainActivity.this, FileLensBackgroundService.class);
+                svc.setAction(FileLensBackgroundService.ACTION_UPDATE);
+                svc.putExtra(FileLensBackgroundService.EXTRA_TITLE, title);
+                svc.putExtra(FileLensBackgroundService.EXTRA_BODY, body);
+                svc.putExtra(FileLensBackgroundService.EXTRA_PROGRESS, progress);
+                svc.putExtra(FileLensBackgroundService.EXTRA_MAX, max);
+                startService(svc);
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public void stopBackgroundService() {
+            try {
+                Intent svc = new Intent(MainActivity.this, FileLensBackgroundService.class);
+                svc.setAction(FileLensBackgroundService.ACTION_STOP);
+                startService(svc);
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public boolean setDeviceClockAlarm(int hour, int minute, String label) {
+            try {
+                Intent intent = new Intent(AlarmClock.ACTION_SET_ALARM)
+                    .putExtra(AlarmClock.EXTRA_HOUR, Math.max(0, Math.min(23, hour)))
+                    .putExtra(AlarmClock.EXTRA_MINUTES, Math.max(0, Math.min(59, minute)))
+                    .putExtra(AlarmClock.EXTRA_MESSAGE, label != null ? label : "FileLens Reminder")
+                    .putExtra(AlarmClock.EXTRA_SKIP_UI, false);
+                startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean openDeviceCalendarEvent(String title, long startEpochMs, String description) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_INSERT)
+                    .setData(CalendarContract.Events.CONTENT_URI)
+                    .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startEpochMs)
+                    .putExtra(CalendarContract.EXTRA_EVENT_END_TIME, startEpochMs + 3600_000L)
+                    .putExtra(CalendarContract.Events.TITLE, title != null ? title : "FileLens Task")
+                    .putExtra(CalendarContract.Events.DESCRIPTION, description != null ? description : "");
+                startActivity(intent);
                 return true;
             } catch (Exception e) {
                 return false;

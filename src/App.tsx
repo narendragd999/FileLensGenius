@@ -150,9 +150,10 @@ export default function App() {
     }
   }, [preferences.theme]);
 
-  // Persist workspace to IndexedDB with short debounce so large files survive reloads cleanly
+  // Persist workspace to IndexedDB (longer debounce during active indexing to prevent UI/IDB hang)
   useEffect(() => {
     if (!isVaultHydrated) return;
+    const delayMs = isIndexing ? 4000 : 1200;
     const timer = window.setTimeout(() => {
       const payload: PersistedVaultState = {
         documents,
@@ -164,10 +165,11 @@ export default function App() {
         lastIndexSummary,
       };
       void saveVaultState(payload);
-    }, 250);
+    }, delayMs);
     return () => window.clearTimeout(timer);
   }, [
     isVaultHydrated,
+    isIndexing,
     documents,
     folders,
     voiceNotes,
@@ -297,6 +299,7 @@ export default function App() {
         } catch {
           // ignore storage errors
         }
+        window.FileLensAndroid?.stopBackgroundService?.();
         setIsIndexing(false);
         setIndexProgress(null);
         indexAbortRef.current = null;
@@ -322,6 +325,12 @@ export default function App() {
       if (isDrainingAndroidQueueRef.current) return;
       isDrainingAndroidQueueRef.current = true;
       setIsIndexing(true);
+      window.FileLensAndroid?.startBackgroundService?.(
+        'FileLens Genius Indexing',
+        'Scanning & OCRing device files…',
+        0,
+        0
+      );
       const controller = new AbortController();
       indexAbortRef.current = controller;
 
@@ -342,14 +351,22 @@ export default function App() {
             signal: controller.signal,
             onProgress: (prog) => {
               const st = androidStatsRef.current;
+              const doneCount = st.totalScanned + prog.indexed;
+              const totalCount = Math.max(item.totalFound ?? doneCount + prog.total, st.totalScanned + prog.total);
               setIndexProgress({
                 ...prog,
-                indexed: st.totalScanned + prog.indexed,
-                total: Math.max(item.totalFound ?? st.totalScanned + prog.total, st.totalScanned + prog.total),
+                indexed: doneCount,
+                total: totalCount,
                 newOrUpdated: st.newOrUpdated + prog.newOrUpdated,
                 skippedUnchanged: st.skippedUnchanged + prog.skippedUnchanged,
                 foldersScanned: st.foldersScanned,
               });
+              window.FileLensAndroid?.updateBackgroundService?.(
+                'FileLens Genius Indexing',
+                `${prog.phase}: ${prog.currentFile}`,
+                doneCount,
+                totalCount
+              );
             },
           });
 
@@ -367,6 +384,8 @@ export default function App() {
           androidStatsRef.current.skippedUnchanged += result.summary.skippedUnchanged;
           androidStatsRef.current.totalScanned += result.summary.totalScanned;
           androidStatsRef.current.sourceLabel = item.sourceLabel;
+          // Yield to WebView UI thread between batches so scrolling & taps stay responsive
+          await new Promise((resolve) => window.setTimeout(resolve, 30));
         }
       } finally {
         isDrainingAndroidQueueRef.current = false;
@@ -610,7 +629,7 @@ export default function App() {
       hasCheckpoint = false;
     }
     const hasPendingOcr = documentsRef.current.some((d) => d.ocrStatus === 'pending');
-    if (!hasCheckpoint && !hasPendingOcr && documentsRef.current.length > 0) return;
+    if (!hasCheckpoint && !hasPendingOcr) return;
 
     const timer = window.setTimeout(() => {
       if (isDrainingAndroidQueueRef.current) return;

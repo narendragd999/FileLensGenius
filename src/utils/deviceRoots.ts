@@ -52,10 +52,18 @@ export interface FileLensAndroidBridge {
   startVoiceCapture?: (langCode: string) => boolean;
   stopVoiceCapture?: () => void;
   launchGoogleDocScanner?: (mode: string) => boolean;
-  extractTextWithMlKit?: (imageDataUrl: string, lang: string) => string;
+  extractTextWithMlKitAsync?: (requestId: string, imageDataUrl: string, lang: string) => void;
   isBatteryOptimizationIgnored?: () => boolean;
   requestIgnoreBatteryOptimizations?: () => boolean;
   consumePendingShareIntent?: () => string;
+  startFtpServer?: () => string;
+  stopFtpServer?: () => void;
+  getFtpServerUrl?: () => string;
+  startBackgroundService?: (title: string, body: string, progress: number, max: number) => void;
+  updateBackgroundService?: (title: string, body: string, progress: number, max: number) => void;
+  stopBackgroundService?: () => void;
+  setDeviceClockAlarm?: (hour: number, minute: number, label: string) => boolean;
+  openDeviceCalendarEvent?: (title: string, startEpochMs: number, description: string) => boolean;
 }
 
 export interface AndroidNativeFileMeta {
@@ -237,15 +245,45 @@ export function launchNativeGoogleDocScanner(mode: 'single' | 'batch' | 'id_2in1
   });
 }
 
-export function extractTextWithNativeMlKit(imageDataUrl: string, lang = 'eng+hin'): string {
-  if (typeof window === 'undefined' || typeof window.FileLensAndroid?.extractTextWithMlKit !== 'function') {
-    return '';
-  }
-  try {
-    return window.FileLensAndroid.extractTextWithMlKit(imageDataUrl, lang) || '';
-  } catch {
-    return '';
-  }
+let mlkitSeq = 0;
+
+export function extractTextWithNativeMlKit(imageDataUrl: string, lang = 'eng+hin'): Promise<string> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof window.FileLensAndroid?.extractTextWithMlKitAsync !== 'function') {
+      resolve('');
+      return;
+    }
+    const reqId = `mlk-${Date.now()}-${++mlkitSeq}`;
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('filelens-mlkit-ocr-result', handler);
+      resolve('');
+    }, 8000);
+
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ requestId?: string; text?: string }>).detail;
+      if (detail?.requestId !== reqId) return;
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('filelens-mlkit-ocr-result', handler);
+      resolve(detail.text || '');
+    };
+
+    window.addEventListener('filelens-mlkit-ocr-result', handler);
+    try {
+      window.FileLensAndroid.extractTextWithMlKitAsync(reqId, imageDataUrl, lang);
+    } catch {
+      if (!settled) {
+        settled = true;
+        window.clearTimeout(timer);
+        window.removeEventListener('filelens-mlkit-ocr-result', handler);
+        resolve('');
+      }
+    }
+  });
 }
 
 const IGNORED_SYSTEM_DIRS = new Set([

@@ -116,8 +116,8 @@ export async function runRealOcrOnImage(
 ): Promise<string> {
   try {
     const prepared = await downscaleForOcr(imageSource, 1200);
-    // Fast native ML Kit OCR path on Android APK (<200ms)
-    const nativeText = extractTextWithNativeMlKit(prepared, ocrLanguage);
+    // Fast non-blocking native ML Kit OCR path on Android APK (<200ms)
+    const nativeText = await extractTextWithNativeMlKit(prepared, ocrLanguage);
     if (nativeText && nativeText.trim().length > 0) {
       const normalized = normalizeDevanagariOcrText(nativeText);
       return (isLikelyKrutiDev(normalized) ? convertKrutiDevToUnicode(normalized) : normalized)

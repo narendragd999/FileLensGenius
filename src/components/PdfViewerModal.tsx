@@ -14,11 +14,13 @@ import {
   RotateCw,
   Search,
   ShieldCheck,
+  Sparkles,
   Trash2,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
+import { structureOcrTextWithAi } from '../utils/aiService';
 import {
   PlacedSignature,
   SavedSignature,
@@ -89,6 +91,8 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   const [sigPosY, setSigPosY] = useState<number>(0.76);
   const [sigWidth, setSigWidth] = useState<number>(0.3);
   const [hasDrawnInk, setHasDrawnInk] = useState<boolean>(false);
+  const [isAiStructuring, setIsAiStructuring] = useState<boolean>(false);
+  const [aiStructuredOutput, setAiStructuredOutput] = useState<string>('');
 
   const safeIdx = Math.max(0, Math.min(currentIdx, Math.max(0, doc.pages.length - 1)));
   const currentPage = doc.pages[safeIdx];
@@ -626,6 +630,27 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                   <span>Re-OCR</span>
                 </button>
                 <button
+                  type="button"
+                  disabled={isAiStructuring || !currentPage.ocrText}
+                  onClick={async () => {
+                    setIsAiStructuring(true);
+                    try {
+                      const out = await structureOcrTextWithAi(currentPage.ocrText, 'markdown');
+                      setAiStructuredOutput(out);
+                      setDrawerTab('ocr');
+                      onToast('AI structured document text');
+                    } catch (err) {
+                      onToast(err instanceof Error ? err.message : 'AI structuring failed');
+                    } finally {
+                      setIsAiStructuring(false);
+                    }
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-300 flex items-center gap-1 disabled:opacity-40"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 ${isAiStructuring ? 'animate-pulse' : ''}`} />
+                  <span>{isAiStructuring ? 'AI…' : 'AI'}</span>
+                </button>
+                <button
                   onClick={copyOcrText}
                   className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-[#2C2C2E] hover:bg-orange-50 text-slate-700 dark:text-slate-200 flex items-center gap-1"
                 >
@@ -667,8 +692,23 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
             </div>
 
             {drawerTab === 'ocr' ? (
-              <div className="flex-1 overflow-y-auto rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3.5 text-sm leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-wrap">
-                {currentPage.ocrText || 'No OCR text indexed for this page.'}
+              <div className="flex-1 overflow-y-auto rounded-xl bg-slate-50 dark:bg-[#2C2C2E] p-3.5 text-sm leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-wrap space-y-3">
+                {aiStructuredOutput && (
+                  <div className="p-3 rounded-xl bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800/40 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-violet-700 dark:text-violet-300">
+                      <span>AI Structured Output</span>
+                      <button
+                        type="button"
+                        onClick={() => setAiStructuredOutput('')}
+                        className="underline"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="text-xs whitespace-pre-wrap">{aiStructuredOutput}</div>
+                  </div>
+                )}
+                <div>{currentPage.ocrText || 'No OCR text indexed for this page.'}</div>
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto space-y-3 pr-1">

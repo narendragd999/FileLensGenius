@@ -49,6 +49,12 @@ import {
   AndroidNativeFileMeta,
   materializeAndroidNativeFile,
 } from '../utils/deviceRoots';
+import {
+  AI_PROVIDER_PRESETS,
+  AiConfig,
+  loadAiConfig,
+  saveAiConfig,
+} from '../utils/aiService';
 import { SmartIndexingBar } from './SmartIndexingBar';
 
 interface ToolsAndSettingsViewProps {
@@ -130,6 +136,12 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
       ? window.FileLensAndroid.getLanServerUrl()
       : ''
   );
+  const [ftpUrl, setFtpUrl] = useState<string>(() =>
+    typeof window !== 'undefined' && window.FileLensAndroid?.getFtpServerUrl
+      ? window.FileLensAndroid.getFtpServerUrl()
+      : ''
+  );
+  const [aiConfig, setAiConfig] = useState<AiConfig>(() => loadAiConfig());
   const [fmPath, setFmPath] = useState<string>('');
   const [fmEntries, setFmEntries] = useState<
     { name: string; path: string; isDirectory: boolean; size: number; lastModified: number }[]
@@ -943,36 +955,148 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
             </div>
           </section>
 
+          {/* AI Structuring & Extraction Settings */}
+          <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-violet-500" />
+                <h2 className="text-sm font-bold">AI Structuring (CSV / Tables / Summary)</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  saveAiConfig(aiConfig);
+                  onToast('Saved AI provider settings');
+                }}
+                className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold"
+              >
+                Save AI
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <select
+                value={aiConfig.providerId}
+                onChange={(e) => {
+                  const preset =
+                    AI_PROVIDER_PRESETS.find((p) => p.id === e.target.value) ?? AI_PROVIDER_PRESETS[0];
+                  const next: AiConfig = {
+                    ...aiConfig,
+                    providerId: preset.id,
+                    endpoint: preset.endpoint,
+                    model: preset.defaultModel,
+                  };
+                  setAiConfig(next);
+                  saveAiConfig(next);
+                }}
+                className="h-9 px-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs font-semibold"
+              >
+                {AI_PROVIDER_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={aiConfig.model}
+                onChange={(e) => setAiConfig({ ...aiConfig, model: e.target.value })}
+                placeholder="Model name"
+                className="h-9 px-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs font-mono"
+              />
+            </div>
+            <input
+              type="url"
+              value={aiConfig.endpoint}
+              onChange={(e) => setAiConfig({ ...aiConfig, endpoint: e.target.value })}
+              placeholder="OpenAI-compatible /v1/chat/completions endpoint"
+              className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs font-mono"
+            />
+            <input
+              type="password"
+              value={aiConfig.apiKey}
+              onChange={(e) => setAiConfig({ ...aiConfig, apiKey: e.target.value })}
+              placeholder="API Key (stored locally on device)"
+              className="w-full h-9 px-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10 text-xs"
+            />
+          </section>
+
           {/* Native Android File Manager, StatFs Storage & LAN Wi-Fi PC Explorer */}
           {hasAndroidBridge && (
             <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-4">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <Wifi className="w-4 h-4 text-sky-500" />
-                  <h2 className="text-sm font-bold">LAN PC Explorer &amp; Device File Manager</h2>
+                  <h2 className="text-sm font-bold">LAN PC Explorer, FTP &amp; File Manager</h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (lanUrl) {
-                      window.FileLensAndroid?.stopLanServer?.();
-                      setLanUrl('');
-                      onToast('Stopped LAN Wi-Fi Explorer');
-                    } else {
-                      const url = window.FileLensAndroid?.startLanServer?.() || '';
-                      setLanUrl(url);
-                      if (url) onToast(`LAN Explorer live at ${url}`);
-                    }
-                  }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
-                    lanUrl
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-sky-600 hover:bg-sky-700 text-white'
-                  }`}
-                >
-                  {lanUrl ? 'Stop Wi-Fi Server' : 'Start Wi-Fi Server'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (lanUrl) {
+                        window.FileLensAndroid?.stopLanServer?.();
+                        setLanUrl('');
+                        onToast('Stopped LAN Wi-Fi Explorer');
+                      } else {
+                        const url = window.FileLensAndroid?.startLanServer?.() || '';
+                        setLanUrl(url);
+                        if (url) onToast(`LAN Explorer live at ${url}`);
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
+                      lanUrl
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-sky-600 hover:bg-sky-700 text-white'
+                    }`}
+                  >
+                    {lanUrl ? 'Stop HTTP' : 'Start HTTP'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (ftpUrl) {
+                        window.FileLensAndroid?.stopFtpServer?.();
+                        setFtpUrl('');
+                        onToast('Stopped FTP Server');
+                      } else {
+                        const url = window.FileLensAndroid?.startFtpServer?.() || '';
+                        setFtpUrl(url);
+                        if (url) onToast(`FTP Server live at ${url}`);
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
+                      ftpUrl
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                    }`}
+                  >
+                    {ftpUrl ? 'Stop FTP' : 'Start FTP'}
+                  </button>
+                </div>
               </div>
+
+              {ftpUrl && (
+                <div className="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/50 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-indigo-700 dark:text-indigo-300 font-semibold">
+                      FTP Server (FileZilla / Windows Explorer · Anonymous):
+                    </div>
+                    <div className="text-xs font-mono font-bold text-slate-900 dark:text-white truncate">
+                      {ftpUrl}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(ftpUrl).catch(() => undefined);
+                      onToast('Copied FTP URL');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-xs font-semibold flex items-center gap-1 shrink-0"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy
+                  </button>
+                </div>
+              )}
 
               {lanUrl && (
                 <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900/50 flex items-center justify-between gap-2">

@@ -667,6 +667,42 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                         <CheckCircle2 className="w-4 h-4" />
                       </button>
                     )}
+                    {typeof window !== 'undefined' &&
+                      typeof window.FileLensAndroid?.setDeviceClockAlarm === 'function' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const dt = note.scheduledDate ? new Date(note.scheduledDate) : new Date(Date.now() + 3600_000);
+                              const hr = Number.isNaN(dt.getTime()) ? 9 : dt.getHours();
+                              const min = Number.isNaN(dt.getTime()) ? 0 : dt.getMinutes();
+                              window.FileLensAndroid?.setDeviceClockAlarm?.(hr, min, note.title);
+                              onToast('Opening Clock Alarm…');
+                            }}
+                            title="Set Android Clock Alarm"
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-orange-500"
+                          >
+                            <Bell className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const dt = note.scheduledDate ? new Date(note.scheduledDate) : new Date(Date.now() + 3600_000);
+                              const ms = Number.isNaN(dt.getTime()) ? Date.now() + 3600_000 : dt.getTime();
+                              window.FileLensAndroid?.openDeviceCalendarEvent?.(
+                                note.title,
+                                ms,
+                                note.transcript
+                              );
+                              onToast('Opening Calendar event…');
+                            }}
+                            title="Add to Android Calendar"
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-sky-500"
+                          >
+                            <Calendar className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
                     <button
                       type="button"
                       onClick={async () => {
