@@ -424,7 +424,7 @@ function detectQuadFromComponent(
     }
 
     const areaRatio = comp.length / totalPx;
-    if (areaRatio < 0.1 || areaRatio > 0.94) continue;
+    if (areaRatio < 0.06 || areaRatio > 0.94) continue;
 
     const bboxArea = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
     const rectangularity = comp.length / bboxArea;
@@ -776,10 +776,11 @@ function scoreQuadCandidate(
         (bl.x * tl.y - tl.x * bl.y)
     );
   const areaRatio = area / (w * h);
-  if (areaRatio < 0.12 || areaRatio > 0.95) return 0;
+  if (areaRatio < 0.06 || areaRatio > 0.95) return 0;
 
   // Interior corner angles must be plausible perspective rectangle angles [58 deg .. 122 deg]
   let angleScoreSum = 0;
+  const minSidePx = Math.min(w, h) * 0.14;
   for (let i = 0; i < 4; i++) {
     const prev = pts[(i + 3) % 4];
     const curr = pts[i];
@@ -790,7 +791,7 @@ function scoreQuadCandidate(
     const v2y = next.y - curr.y;
     const d1 = Math.hypot(v1x, v1y);
     const d2 = Math.hypot(v2x, v2y);
-    if (d1 < w * 0.18 || d2 < h * 0.18) return 0;
+    if (d1 < minSidePx || d2 < minSidePx) return 0;
     const cosA = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (d1 * d2)));
     const deg = (Math.acos(cosA) * 180) / Math.PI;
     if (deg < 58 || deg > 122) return 0;
@@ -806,9 +807,6 @@ function scoreQuadCandidate(
   const wRatio = Math.min(topW, botW) / Math.max(1, Math.max(topW, botW));
   const hRatio = Math.min(leftH, rightH) / Math.max(1, Math.max(leftH, rightH));
   if (wRatio < 0.68 || hRatio < 0.68) return 0;
-
-  // Reject small sub-cards/modals that skip the top third of a full-frame page
-  if (Math.min(tl.y, tr.y) > h * 0.34 && areaRatio < 0.48) return 0;
 
   // Photometric edge support & inside-vs-outside paper contrast along all 4 edges
   const quadCx = (tl.x + tr.x + br.x + bl.x) * 0.25;
