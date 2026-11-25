@@ -53,9 +53,7 @@ export const VoiceNoteConfirmModal: React.FC<VoiceNoteConfirmModalProps> = ({
   const [recurrence, setRecurrence] = useState<RecurrenceRule>(initialRecurrence);
   const [steps, setSteps] = useState<string[]>(initialExtraction.checklistSteps);
   const [newStep, setNewStep] = useState('');
-  const [setClockAlarm, setSetClockAlarm] = useState<boolean>(
-    initialExtraction.isReminderRecommended
-  );
+  const [setClockAlarm, setSetClockAlarm] = useState<boolean>(true);
   const [addToCalendar, setAddToCalendar] = useState<boolean>(false);
 
   useEffect(() => {
@@ -70,7 +68,7 @@ export const VoiceNoteConfirmModal: React.FC<VoiceNoteConfirmModalProps> = ({
     setRecurrence(initialRecurrence);
     setSteps(initialExtraction.checklistSteps.length > 0 ? initialExtraction.checklistSteps : [initialTranscript.trim()]);
     setNewStep('');
-    setSetClockAlarm(initialExtraction.isReminderRecommended);
+    setSetClockAlarm(true);
     setAddToCalendar(false);
   }, [open, initialTranscript, initialExtraction, initialRecurrence]);
 
@@ -396,7 +394,7 @@ export const VoiceNoteConfirmModal: React.FC<VoiceNoteConfirmModalProps> = ({
               }`}
             >
               <Bell className="w-3.5 h-3.5" />
-              <span>Clock Alarm {setClockAlarm ? 'On' : 'Off'}</span>
+              <span>Auto Alert {setClockAlarm ? 'On' : 'Off'}</span>
             </button>
             <button
               type="button"

@@ -2,6 +2,8 @@ package com.filelens.genius;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -1107,6 +1109,40 @@ public class MainActivity extends BridgeActivity {
                 }
             }
             return total;
+        }
+
+        @JavascriptInterface
+        public boolean scheduleAutoReminder(String id, long triggerAtMs, String title, String body) {
+            try {
+                if (triggerAtMs <= System.currentTimeMillis() - 60_000L) return false;
+                long fireMs = Math.max(System.currentTimeMillis() + 5_000L, triggerAtMs);
+                AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+                if (am == null) return false;
+
+                int reqCode = id != null ? Math.abs(id.hashCode()) : (int) (fireMs & 0x7FFFFFFF);
+                Intent intent = new Intent(MainActivity.this, ReminderAlarmReceiver.class);
+                intent.putExtra(ReminderAlarmReceiver.EXTRA_TITLE, title != null ? title : "FileLens Reminder");
+                intent.putExtra(ReminderAlarmReceiver.EXTRA_BODY, body != null ? body : "Scheduled task");
+                intent.putExtra(ReminderAlarmReceiver.EXTRA_NOTIF_ID, reqCode);
+
+                PendingIntent pi = PendingIntent.getBroadcast(
+                    MainActivity.this,
+                    reqCode,
+                    intent,
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+                        : PendingIntent.FLAG_UPDATE_CURRENT
+                );
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, fireMs, pi);
+                } else {
+                    am.set(AlarmManager.RTC_WAKEUP, fireMs, pi);
+                }
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
         }
 
         @JavascriptInterface

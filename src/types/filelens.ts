@@ -6,7 +6,7 @@ export type BatchAutoPace = 'wait_page' | 'delay_3s' | 'delay_5s';
 
 export type PdfPageSizePreset = 'auto' | 'a4' | 'letter';
 
-export type PdfQualityPreset = 'high' | 'balanced' | 'compact';
+export type PdfQualityPreset = 'high' | 'balanced' | 'compact' | 'small';
 
 export type PdfCompressPreset = 'email_small' | 'balanced' | 'print_high';
 

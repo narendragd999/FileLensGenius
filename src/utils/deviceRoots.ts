@@ -62,6 +62,7 @@ export interface FileLensAndroidBridge {
   startBackgroundService?: (title: string, body: string, progress: number, max: number) => void;
   updateBackgroundService?: (title: string, body: string, progress: number, max: number) => void;
   stopBackgroundService?: () => void;
+  scheduleAutoReminder?: (id: string, triggerAtMs: number, title: string, body: string) => boolean;
   setDeviceClockAlarm?: (hour: number, minute: number, label: string) => boolean;
   openDeviceCalendarEvent?: (title: string, startEpochMs: number, description: string) => boolean;
   saveToPublicDocuments?: (fileName: string, mimeType: string, base64Data: string) => string;

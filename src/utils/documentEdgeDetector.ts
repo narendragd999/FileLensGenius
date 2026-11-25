@@ -870,8 +870,8 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
   }
 
   const [pTL, pTR, pBR, pBL] = bestCorners;
-  // Tiny 0.8% outward margin so edge text is never clipped
-  const pad = 0.008;
+  // Tight 0.1% paper edge hug so no desk border leaks into the cropped scan
+  const pad = 0.001;
   const clamp01 = (v: number) => Math.max(0.01, Math.min(0.99, v));
   const quad: NormalizedQuad = {
     tlX: clamp01(pTL.x / width - pad),
@@ -892,10 +892,10 @@ export async function detectQuadFromImageUrl(imageUrl: string): Promise<Normaliz
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      const targetW = 220;
+      const targetW = 280;
       const targetH = Math.max(
-        80,
-        Math.min(280, Math.round((img.naturalHeight / Math.max(1, img.naturalWidth)) * targetW))
+        100,
+        Math.min(360, Math.round((img.naturalHeight / Math.max(1, img.naturalWidth)) * targetW))
       );
       const canvas = document.createElement('canvas');
       canvas.width = targetW;

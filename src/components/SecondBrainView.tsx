@@ -324,11 +324,21 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
       const dt = new Date(confirmed.scheduledDateIso);
       if (!Number.isNaN(dt.getTime())) {
         if (confirmed.setClockAlarm) {
-          window.FileLensAndroid?.setDeviceClockAlarm?.(
-            dt.getHours(),
-            dt.getMinutes(),
-            confirmed.title
+          const triggerMs = dt.getTime();
+          window.FileLensAndroid?.scheduleAutoReminder?.(
+            `${note.id}-main`,
+            triggerMs,
+            `⏰ ${confirmed.title}`,
+            confirmed.transcript
           );
+          if (triggerMs - Date.now() > 20 * 60_000) {
+            window.FileLensAndroid?.scheduleAutoReminder?.(
+              `${note.id}-15m`,
+              triggerMs - 15 * 60_000,
+              `Upcoming in 15m: ${confirmed.title}`,
+              confirmed.transcript
+            );
+          }
         }
         if (confirmed.addToCalendar) {
           window.FileLensAndroid?.openDeviceCalendarEvent?.(

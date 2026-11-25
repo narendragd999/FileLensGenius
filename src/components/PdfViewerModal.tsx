@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { structureOcrTextWithAi } from '../utils/aiService';
 import {
+  PdfQualityPreset,
   PlacedSignature,
   SavedSignature,
   ScanDocument,
@@ -97,6 +98,7 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   const [hasDrawnInk, setHasDrawnInk] = useState<boolean>(false);
   const [isAiStructuring, setIsAiStructuring] = useState<boolean>(false);
   const [aiStructuredOutput, setAiStructuredOutput] = useState<string>('');
+  const [exportQuality, setExportQuality] = useState<PdfQualityPreset>(doc.qualityPreset || 'balanced');
 
   const safeIdx = Math.max(0, Math.min(currentIdx, Math.max(0, doc.pages.length - 1)));
   const currentPage = doc.pages[safeIdx];
@@ -301,7 +303,10 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   const handleExportPdf = async () => {
     setIsExporting(true);
     try {
-      await exportDocumentAsPdf(doc, doc.passwordProtected ? pdfPasswordInput : undefined);
+      await exportDocumentAsPdf(
+        { ...doc, qualityPreset: exportQuality },
+        doc.passwordProtected ? pdfPasswordInput : undefined
+      );
       onToast(
         doc.passwordProtected && pdfPasswordInput.trim()
           ? `Downloaded encrypted "${doc.title}.pdf"`
@@ -1143,6 +1148,53 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                 />
               </div>
             )}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
+                <span>PDF File Size &amp; Compression</span>
+                <span className="font-mono">
+                  Est.{' '}
+                  {formatBytes(
+                    Math.max(
+                      45_000,
+                      Math.round(
+                        doc.pages.length *
+                          (exportQuality === 'high'
+                            ? 620_000
+                            : exportQuality === 'balanced'
+                              ? 290_000
+                              : exportQuality === 'compact'
+                                ? 145_000
+                                : 72_000)
+                      )
+                    )
+                  )}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {(
+                  [
+                    { id: 'high', label: 'HD', sub: 'Largest' },
+                    { id: 'balanced', label: 'Balanced', sub: 'Default' },
+                    { id: 'compact', label: 'Medium', sub: 'Compact' },
+                    { id: 'small', label: 'Small', sub: 'Email' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setExportQuality(opt.id)}
+                    className={`py-2 px-1.5 rounded-xl border text-center transition-colors ${
+                      exportQuality === opt.id
+                        ? 'bg-orange-600 border-orange-600 text-white'
+                        : 'bg-slate-50 dark:bg-[#2C2C2E] border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200'
+                    }`}
+                  >
+                    <div className="text-xs font-bold leading-tight">{opt.label}</div>
+                    <div className="text-[10px] opacity-80">{opt.sub}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
             <button
               type="button"
               disabled={isExporting}
@@ -1230,7 +1282,7 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
                   onClick={async () => {
                     setIsExporting(true);
                     try {
-                      const ok = await shareDocumentAsPdf(doc);
+                      const ok = await shareDocumentAsPdf({ ...doc, qualityPreset: exportQuality });
                       if (!ok) onToast('Could not open share sheet');
                       setShowExportSheet(false);
                     } catch {

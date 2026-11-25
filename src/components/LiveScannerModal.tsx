@@ -229,8 +229,12 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       }
 
       const constraintsToTry: MediaStreamConstraints[] = selectedDeviceId
-        ? [{ video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }]
+        ? [
+            { video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false },
+            { video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+          ]
         : [
+            { video: { facingMode: { ideal: facingMode }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false },
             { video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
             { video: { facingMode: { ideal: facingMode } }, audio: false },
             { video: true, audio: false },
@@ -285,6 +289,12 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           await video.play();
         } catch {
           // Wait for loadedmetadata fallback
+        }
+        const track = stream.getVideoTracks?.()[0];
+        if (track && typeof track.applyConstraints === 'function') {
+          void track
+            .applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] })
+            .catch(() => undefined);
         }
       }
 
@@ -349,7 +359,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
   // REAL Live Frame Capture directly from <video> hardware stream!
   const captureLiveVideoFrame = useCallback(
-    (quadOverride?: NormalizedQuad | null) => {
+    async (quadOverride?: NormalizedQuad | null) => {
       const video = videoRef.current;
       if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
         onToast('Camera feed is still starting — hold on a moment');
@@ -376,8 +386,33 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         return;
       }
 
-      ctx.drawImage(video, 0, 0, outW, outH);
-      const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      let capturedDataUrl = '';
+      const activeTrack = streamRef.current?.getVideoTracks?.()[0];
+      const ImageCaptureCtor = (
+        window as unknown as {
+          ImageCapture?: new (track: MediaStreamTrack) => { takePhoto: () => Promise<Blob> };
+        }
+      ).ImageCapture;
+
+      if (cameraZoom === 1 && activeTrack && ImageCaptureCtor) {
+        try {
+          const ic = new ImageCaptureCtor(activeTrack);
+          const photoBlob = await ic.takePhoto();
+          capturedDataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(photoBlob);
+          });
+        } catch {
+          capturedDataUrl = '';
+        }
+      }
+
+      if (!capturedDataUrl) {
+        ctx.drawImage(video, 0, 0, outW, outH);
+        capturedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+      }
 
       // Snapshot visual 8x8 luma fingerprint so Auto-Capture never duplicates the same page!
       lastCapturedFpRef.current = latestFpRef.current ? new Float32Array(latestFpRef.current) : null;
@@ -436,14 +471,17 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
       enrichPageWithRealOcr(pageId, capturedDataUrl);
 
-      // Auto-detect white A4 paper borders & straighten immediately on capture!
+      // Auto-detect white A4 paper borders at high-res & straighten immediately on capture!
       void (async () => {
-        const autoQuad =
-          !isFullQuad(effectiveQuad)
-            ? effectiveQuad
-            : await detectQuadFromImageUrl(capturedDataUrl);
+        let autoQuad = effectiveQuad;
+        if (!quadOverride) {
+          const hiResQuad = await detectQuadFromImageUrl(capturedDataUrl);
+          if (!isFullQuad(hiResQuad)) {
+            autoQuad = hiResQuad;
+          }
+        }
         if (!isFullQuad(autoQuad)) {
-          const straightUrl = await rectifyPageToStraightImage(capturedDataUrl, autoQuad, 0);
+          const straightUrl = await rectifyPageToStraightImage(capturedDataUrl, autoQuad, 0, 2400);
           setCapturedPages((prev) =>
             prev.map((p) =>
               p.id === pageId

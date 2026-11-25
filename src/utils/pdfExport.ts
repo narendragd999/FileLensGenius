@@ -161,9 +161,10 @@ function applyMorphologicalDocFilter(
 }
 
 const QUALITY_CONFIG: Record<PdfQualityPreset, { maxDim: number; jpegQuality: number }> = {
-  high: { maxDim: 2200, jpegQuality: 0.92 },
-  balanced: { maxDim: 1700, jpegQuality: 0.82 },
-  compact: { maxDim: 1300, jpegQuality: 0.68 },
+  high: { maxDim: 2400, jpegQuality: 0.93 },
+  balanced: { maxDim: 1700, jpegQuality: 0.80 },
+  compact: { maxDim: 1200, jpegQuality: 0.62 },
+  small: { maxDim: 900, jpegQuality: 0.42 },
 };
 
 export async function renderPageToDataUrl(
@@ -276,7 +277,7 @@ export async function rectifyPageToStraightImage(
   rawImageUrl: string,
   quad: NormalizedQuad,
   rotation: 0 | 90 | 180 | 270 = 0,
-  maxDim = 1800
+  maxDim = 2400
 ): Promise<string> {
   if (isFullQuad(quad) && rotation === 0) return rawImageUrl;
   const img = await loadImage(rawImageUrl);
@@ -309,7 +310,7 @@ export async function rectifyPageToStraightImage(
   }
 
   if (rotation === 0) {
-    return warped.toDataURL('image/jpeg', 0.9);
+    return warped.toDataURL('image/jpeg', 0.94);
   }
 
   const isSideways = rotation === 90 || rotation === 270;
