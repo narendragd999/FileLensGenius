@@ -105,6 +105,8 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
   const safeIdx = Math.max(0, Math.min(currentIdx, Math.max(0, doc.pages.length - 1)));
   const currentPage = doc.pages[safeIdx];
   const touchStartXRef = useRef<number | null>(null);
+  const pinchStartDistRef = useRef<number | null>(null);
+  const pinchStartZoomRef = useRef<number>(1);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -544,11 +546,33 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
       {/* Main Viewer Canvas + Optional Side OCR Drawer */}
       <div className="flex-1 flex overflow-hidden relative">
         <div
-          className="flex-1 overflow-auto flex p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative"
+          className="flex-1 overflow-auto flex p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative touch-pan-x touch-pan-y"
+          onDoubleClick={() => setZoom((z) => (z > 1.2 ? 1 : 2.2))}
           onTouchStart={(e) => {
-            if (e.touches.length === 1 && zoom <= 1.05) touchStartXRef.current = e.touches[0].clientX;
+            if (e.touches.length === 2) {
+              const dx = e.touches[0].clientX - e.touches[1].clientX;
+              const dy = e.touches[0].clientY - e.touches[1].clientY;
+              pinchStartDistRef.current = Math.hypot(dx, dy);
+              pinchStartZoomRef.current = zoom;
+              touchStartXRef.current = null;
+            } else if (e.touches.length === 1 && zoom <= 1.05) {
+              touchStartXRef.current = e.touches[0].clientX;
+            }
+          }}
+          onTouchMove={(e) => {
+            if (e.touches.length === 2 && pinchStartDistRef.current) {
+              const dx = e.touches[0].clientX - e.touches[1].clientX;
+              const dy = e.touches[0].clientY - e.touches[1].clientY;
+              const dist = Math.hypot(dx, dy);
+              const next = Math.max(
+                0.75,
+                Math.min(4.0, Number((pinchStartZoomRef.current * (dist / pinchStartDistRef.current)).toFixed(2)))
+              );
+              setZoom(next);
+            }
           }}
           onTouchEnd={(e) => {
+            if (e.touches.length < 2) pinchStartDistRef.current = null;
             if (touchStartXRef.current === null || e.changedTouches.length === 0) return;
             const dx = e.changedTouches[0].clientX - touchStartXRef.current;
             touchStartXRef.current = null;
@@ -612,7 +636,7 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
           {/* Floating Zoom & Signature Clear Controls */}
           <div className="fixed bottom-24 right-5 flex flex-col gap-2 z-10">
             <button
-              onClick={() => setZoom((z) => Math.min(2.2, Number((z + 0.25).toFixed(2))))}
+              onClick={() => setZoom((z) => Math.min(4.0, Number((z + 0.35).toFixed(2))))}
               aria-label="Zoom in"
               className="w-10 h-10 rounded-full bg-white/95 dark:bg-[#2C2C2E]/95 shadow-md border border-slate-200 dark:border-white/10 flex items-center justify-center hover:text-orange-600"
             >

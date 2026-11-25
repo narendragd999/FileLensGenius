@@ -761,16 +761,16 @@ function scoreQuadCandidate(
     edgeSupportSum += edgeScore;
   }
 
-  if (strongEdges < 3) return 0;
+  if (strongEdges < 2) return 0;
   const edgeQuality = edgeSupportSum / 4;
-  if (edgeQuality < 0.32) return 0;
+  if (edgeQuality < 0.22) return 0;
 
   // Interior paper uniformity check: reject quads that swallow dark keyboards/desks
   let interiorHits = 0;
   let interiorDark = 0;
   let interiorTotal = 0;
-  const darkCutoff = Math.max(60, centerPaperRef - 28);
-  const paperCutoff = Math.max(85, centerPaperRef - 20);
+  const darkCutoff = Math.max(55, centerPaperRef - 36);
+  const paperCutoff = Math.max(80, centerPaperRef - 24);
   for (let gy = 1; gy <= 6; gy++) {
     const v = 0.08 + (0.84 * (gy - 1)) / 5;
     for (let gx = 1; gx <= 6; gx++) {
@@ -787,7 +787,7 @@ function scoreQuadCandidate(
       if (val < darkCutoff) interiorDark++;
     }
   }
-  if (interiorTotal > 0 && interiorDark / interiorTotal > 0.16) return 0;
+  if (interiorTotal > 0 && interiorDark / interiorTotal > 0.28) return 0;
   const interiorQuality = interiorTotal > 0 ? interiorHits / interiorTotal : 0.7;
 
   const shapeQuality = (angleQuality + wRatio + hRatio) / 3;
@@ -942,22 +942,6 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     }
   }
 
-  // 2c. Preserve thin 1-3px dark contact-shadow valleys between white paper and bright desks
-  const segWhite = new Float32Array(closedWhite);
-  for (let y = 4; y < height - 4; y++) {
-    const row = y * width;
-    for (let x = 4; x < width - 4; x++) {
-      const i = row + x;
-      const g = rawGray[i];
-      const vDrop = Math.min(rawGray[i - 4 * width] - g, rawGray[i + 4 * width] - g);
-      const hDrop = Math.min(rawGray[i - 4] - g, rawGray[i + 4] - g);
-      const valley = Math.max(vDrop, hDrop);
-      if (valley > 9) {
-        segWhite[i] = Math.max(0, segWhite[i] - valley * 2.8);
-      }
-    }
-  }
-
   // 4. Generate candidate quads from Otsu + center-seeded paper thresholds (separates white paper from grey desks)
   const otsu = computeOtsuThreshold(closedWhite);
   const centerSamples: number[] = [];
@@ -987,7 +971,7 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
 
   const candidates: [Pt, Pt, Pt, Pt][] = [];
   for (const t of thresholds) {
-    const c = detectQuadFromComponent(segWhite, gradMag, width, height, t);
+    const c = detectQuadFromComponent(closedWhite, gradMag, width, height, t);
     if (c) candidates.push(c);
   }
   const normOtsu = computeOtsuThreshold(shadowNormWhite);
@@ -1007,17 +991,17 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     }
   }
 
-  if (!bestCorners || bestScore < 0.44) {
+  if (!bestCorners || bestScore < 0.30) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
   // Snap edges outward to true paper-to-desk gradient so shaded margins are never clipped
   const snapped = snapQuadToOuterPaperBoundary(bestCorners, closedWhite, gradMag, width, height);
   const snappedScore = scoreQuadCandidate(snapped, closedWhite, gradMag, width, height, centerPaperRef);
-  const finalCorners = snappedScore >= bestScore * 0.9 ? snapped : bestCorners;
+  const finalCorners = snappedScore >= bestScore * 0.88 ? snapped : bestCorners;
 
   const [pTL, pTR, pBR, pBL] = finalCorners;
-  const clamp01 = (v: number) => Math.max(0.0, Math.min(1.0, v));
+  const clamp01 = (v: number) => Math.max(0.01, Math.min(0.99, v));
   const quad: NormalizedQuad = {
     tlX: clamp01(pTL.x / width),
     tlY: clamp01(pTL.y / height),
@@ -1028,20 +1012,6 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
     blX: clamp01(pBL.x / width),
     blY: clamp01(pBL.y / height),
   };
-
-  // If all 4 edges sit within 4.5% of the frame border, treat as full-frame document
-  if (
-    quad.tlX <= 0.045 &&
-    quad.tlY <= 0.045 &&
-    quad.trX >= 0.955 &&
-    quad.trY <= 0.045 &&
-    quad.brX >= 0.955 &&
-    quad.brY >= 0.955 &&
-    quad.blX <= 0.045 &&
-    quad.blY >= 0.955
-  ) {
-    return { quad: FULL_QUAD, confidence: bestScore, fingerprint };
-  }
 
   return { quad, confidence: bestScore, fingerprint };
 }

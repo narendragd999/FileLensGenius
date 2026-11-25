@@ -90,7 +90,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const [scanMode, setScanMode] = useState<ScanMode>(isAppendMode ? 'batch' : initialMode);
   const [autoCapture, setAutoCapture] = useState<boolean>(false);
   const [batchPace, setBatchPace] = useState<BatchAutoPace>(preferences.batchPace);
-  const [flashOn, setFlashOn] = useState<boolean>(false);
+  const [flashMode, setFlashMode] = useState<'auto' | 'on' | 'off'>('auto');
+  const [autoTorchActive, setAutoTorchActive] = useState<boolean>(false);
+  const effectiveFlashOn = flashMode === 'on' || (flashMode === 'auto' && autoTorchActive);
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [cameraZoom, setCameraZoom] = useState<1 | 2>(1);
   const [focusPoint, setFocusPoint] = useState<{ x: number; y: number } | null>(null);
@@ -310,7 +312,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     };
   }, [phase, facingMode, selectedDeviceId, cameraRetryKey, stopCameraTracks]);
 
-  // Apply Torch / Flash constraint if supported by mobile rear camera hardware
+  // Apply Torch / Flash constraint (Auto in low light, On, or Off)
   useEffect(() => {
     const track = streamRef.current?.getVideoTracks?.()[0];
     if (!track) return;
@@ -318,11 +320,11 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     if (caps.torch) {
       track
         .applyConstraints({
-          advanced: [{ torch: flashOn } as MediaTrackConstraintSet],
+          advanced: [{ torch: effectiveFlashOn } as MediaTrackConstraintSet],
         })
         .catch(() => {});
     }
-  }, [flashOn, cameraStatus]);
+  }, [effectiveFlashOn, cameraStatus]);
 
   // Background real OCR enrichment for a newly captured page
   const enrichPageWithRealOcr = useCallback(
@@ -386,7 +388,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         return;
       }
 
+      ctx.filter = 'contrast(1.06) brightness(1.02) saturate(1.04)';
       ctx.drawImage(video, 0, 0, outW, outH);
+      ctx.filter = 'none';
       const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.94);
       navigator.vibrate?.(20);
 
@@ -512,6 +516,14 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       const analysis = analyzeCanvasFrame(canvas, true);
       latestFpRef.current = analysis.fingerprint;
 
+      if (flashMode === 'auto' && analysis.fingerprint.length > 0) {
+        let sumLuma = 0;
+        for (let k = 0; k < analysis.fingerprint.length; k++) sumLuma += analysis.fingerprint[k];
+        const meanLuma = sumLuma / analysis.fingerprint.length;
+        if (meanLuma < 0.34) setAutoTorchActive(true);
+        else if (meanLuma > 0.48) setAutoTorchActive(false);
+      }
+
       // Anti-Duplicate Smart Page-Change Gate (ported from LiveDocumentCameraView.kt)
       if (waitingPageSwapRef.current && lastCapturedFpRef.current) {
         const visualDelta = computeFingerprintDelta(analysis.fingerprint, lastCapturedFpRef.current);
@@ -598,10 +610,10 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           lastQuadRef.current = null;
         }
       }
-    }, 160);
+    }, 200);
 
     return () => window.clearInterval(timer);
-  }, [autoCapture, batchPace, cameraStatus, captureLiveVideoFrame, phase]);
+  }, [autoCapture, batchPace, cameraStatus, captureLiveVideoFrame, flashMode, phase]);
 
   const handleSwitchCamera = () => {
     if (videoDevices.length > 1) {
@@ -899,13 +911,26 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => setFlashOn((f) => !f)}
+                onClick={() =>
+                  setFlashMode((m) => (m === 'auto' ? 'on' : m === 'on' ? 'off' : 'auto'))
+                }
                 className={`min-h-[34px] px-2.5 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-colors ${
-                  flashOn ? 'bg-orange-600 text-white' : 'bg-white/12 text-white/85 hover:bg-white/20'
+                  effectiveFlashOn
+                    ? 'bg-orange-600 text-white'
+                    : flashMode === 'auto'
+                      ? 'bg-amber-500/25 text-amber-200 border border-amber-400/40'
+                      : 'bg-white/12 text-white/85 hover:bg-white/20'
                 }`}
+                title="Flash: Auto / On / Off"
               >
-                {flashOn ? <Zap className="w-3.5 h-3.5" /> : <ZapOff className="w-3.5 h-3.5" />}
-                <span className="hidden sm:inline">{flashOn ? 'Torch On' : 'Torch'}</span>
+                {flashMode === 'off' ? (
+                  <ZapOff className="w-3.5 h-3.5" />
+                ) : (
+                  <Zap className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {flashMode === 'auto' ? 'Auto' : flashMode === 'on' ? 'On' : 'Off'}
+                </span>
               </button>
               <button
                 type="button"
