@@ -295,9 +295,24 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         }
         const track = stream.getVideoTracks?.()[0];
         if (track && typeof track.applyConstraints === 'function') {
-          void track
-            .applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] })
-            .catch(() => undefined);
+          const caps = (track.getCapabilities?.() as {
+            focusMode?: string[];
+            exposureMode?: string[];
+            whiteBalanceMode?: string[];
+          } | undefined) ?? {};
+          const adv: Record<string, unknown> = {};
+          if (!caps.focusMode || caps.focusMode.includes('continuous')) {
+            adv.focusMode = 'continuous';
+          } else if (caps.focusMode.includes('single-shot')) {
+            adv.focusMode = 'single-shot';
+          }
+          if (caps.exposureMode?.includes('continuous')) adv.exposureMode = 'continuous';
+          if (caps.whiteBalanceMode?.includes('continuous')) adv.whiteBalanceMode = 'continuous';
+          if (Object.keys(adv).length > 0) {
+            void track
+              .applyConstraints({ advanced: [adv as MediaTrackConstraintSet] })
+              .catch(() => undefined);
+          }
         }
       }
 
@@ -312,6 +327,43 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       stopCameraTracks();
     };
   }, [phase, facingMode, selectedDeviceId, cameraRetryKey, stopCameraTracks]);
+
+  // Trigger real hardware camera lens focus (tap-to-focus or center autofocus)
+  const triggerCameraFocus = useCallback((normX = 0.5, normY = 0.5, showReticle = true) => {
+    if (showReticle) {
+      setFocusPoint({ x: normX * 100, y: normY * 100 });
+      window.setTimeout(() => setFocusPoint(null), 950);
+    }
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    if (!track || typeof track.applyConstraints !== 'function') return;
+    const caps = (track.getCapabilities?.() as { focusMode?: string[] } | undefined) ?? {};
+    const focusModes = caps.focusMode ?? [];
+    const targetMode = focusModes.includes('single-shot') ? 'single-shot' : 'continuous';
+
+    const withPoi: Record<string, unknown> = {
+      pointsOfInterest: [{ x: Math.max(0.05, Math.min(0.95, normX)), y: Math.max(0.05, Math.min(0.95, normY)) }],
+      focusMode: targetMode,
+    };
+    void track
+      .applyConstraints({ advanced: [withPoi as MediaTrackConstraintSet] })
+      .catch(() =>
+        track
+          .applyConstraints({ advanced: [{ focusMode: targetMode } as MediaTrackConstraintSet] })
+          .catch(() => undefined)
+      )
+      .finally(() => {
+        if (targetMode === 'single-shot' && (!focusModes.length || focusModes.includes('continuous'))) {
+          window.setTimeout(() => {
+            const activeTrack = streamRef.current?.getVideoTracks?.()[0];
+            if (activeTrack && typeof activeTrack.applyConstraints === 'function') {
+              void activeTrack
+                .applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] })
+                .catch(() => undefined);
+            }
+          }, 1600);
+        }
+      });
+  }, []);
 
   // Apply Torch / Flash constraint (Auto in low light, On, or Off)
   useEffect(() => {
@@ -617,6 +669,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           waitingPageSwapRef.current = false;
           setWaitingPageSwap(false);
           stableFramesRef.current = 0;
+          triggerCameraFocus(0.5, 0.5, false);
         }
       }
 
@@ -1071,6 +1124,15 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
               </button>
               <button
                 type="button"
+                onClick={() => triggerCameraFocus(0.5, 0.5, true)}
+                aria-label="Refocus camera"
+                title="Refocus camera"
+                className="min-h-[34px] px-2 rounded-full flex items-center justify-center text-[11px] font-bold bg-white/10 hover:bg-white/20 text-white transition-colors"
+              >
+                AF
+              </button>
+              <button
+                type="button"
                 onClick={() => setShowGrid((g) => !g)}
                 aria-label="Toggle composition grid"
                 className={`min-h-[34px] min-w-[34px] rounded-full flex items-center justify-center transition-colors ${
@@ -1089,10 +1151,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           onClick={(e) => {
             if (cameraStatus !== 'live') return;
             const rect = e.currentTarget.getBoundingClientRect();
-            const x = ((e.clientX - rect.left) / rect.width) * 100;
-            const y = ((e.clientY - rect.top) / rect.height) * 100;
-            setFocusPoint({ x, y });
-            window.setTimeout(() => setFocusPoint(null), 900);
+            const nx = (e.clientX - rect.left) / rect.width;
+            const ny = (e.clientY - rect.top) / rect.height;
+            triggerCameraFocus(nx, ny, true);
           }}
         >
           {/* Always mount <video> so srcObject attaches immediately when stream opens */}

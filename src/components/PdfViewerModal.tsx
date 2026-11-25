@@ -545,44 +545,10 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
 
       {/* Main Viewer Canvas + Optional Side OCR Drawer */}
       <div className="flex-1 flex overflow-hidden relative">
-        <div
-          className="flex-1 overflow-auto flex p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative touch-pan-x touch-pan-y"
-          onDoubleClick={() => setZoom((z) => (z > 1.2 ? 1 : 2.2))}
-          onTouchStart={(e) => {
-            if (e.touches.length === 2) {
-              const dx = e.touches[0].clientX - e.touches[1].clientX;
-              const dy = e.touches[0].clientY - e.touches[1].clientY;
-              pinchStartDistRef.current = Math.hypot(dx, dy);
-              pinchStartZoomRef.current = zoom;
-              touchStartXRef.current = null;
-            } else if (e.touches.length === 1 && zoom <= 1.05) {
-              touchStartXRef.current = e.touches[0].clientX;
-            }
-          }}
-          onTouchMove={(e) => {
-            if (e.touches.length === 2 && pinchStartDistRef.current) {
-              const dx = e.touches[0].clientX - e.touches[1].clientX;
-              const dy = e.touches[0].clientY - e.touches[1].clientY;
-              const dist = Math.hypot(dx, dy);
-              const next = Math.max(
-                0.75,
-                Math.min(4.0, Number((pinchStartZoomRef.current * (dist / pinchStartDistRef.current)).toFixed(2)))
-              );
-              setZoom(next);
-            }
-          }}
-          onTouchEnd={(e) => {
-            if (e.touches.length < 2) pinchStartDistRef.current = null;
-            if (touchStartXRef.current === null || e.changedTouches.length === 0) return;
-            const dx = e.changedTouches[0].clientX - touchStartXRef.current;
-            touchStartXRef.current = null;
-            if (dx > 55) setCurrentIdx((i) => Math.max(0, i - 1));
-            else if (dx < -55) setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1));
-          }}
-        >
-          {/* Floating Page Indicator Pill (hidden while Find bar is open) */}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {/* Floating Page Indicator Pill (centered cleanly below header, hidden while Find bar is open) */}
           {!showFindBar && (
-            <div className="fixed top-16 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/70 text-white text-xs font-mono font-semibold backdrop-blur-md shadow flex items-center gap-2 pointer-events-auto">
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/75 text-white text-xs font-mono font-semibold backdrop-blur-md shadow flex items-center gap-2 pointer-events-auto whitespace-nowrap">
               <button
                 type="button"
                 onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
@@ -616,6 +582,41 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
               )}
             </div>
           )}
+          <div
+            className="flex-1 overflow-auto flex px-4 pb-4 pt-12 sm:px-8 sm:pb-8 sm:pt-14 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative touch-pan-x touch-pan-y"
+            onDoubleClick={() => setZoom((z) => (z > 1.2 ? 1 : 2.2))}
+            onTouchStart={(e) => {
+              if (e.touches.length === 2) {
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                pinchStartDistRef.current = Math.hypot(dx, dy);
+                pinchStartZoomRef.current = zoom;
+                touchStartXRef.current = null;
+              } else if (e.touches.length === 1 && zoom <= 1.05) {
+                touchStartXRef.current = e.touches[0].clientX;
+              }
+            }}
+            onTouchMove={(e) => {
+              if (e.touches.length === 2 && pinchStartDistRef.current) {
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const dist = Math.hypot(dx, dy);
+                const next = Math.max(
+                  0.75,
+                  Math.min(4.0, Number((pinchStartZoomRef.current * (dist / pinchStartDistRef.current)).toFixed(2)))
+                );
+                setZoom(next);
+              }
+            }}
+            onTouchEnd={(e) => {
+              if (e.touches.length < 2) pinchStartDistRef.current = null;
+              if (touchStartXRef.current === null || e.changedTouches.length === 0) return;
+              const dx = e.changedTouches[0].clientX - touchStartXRef.current;
+              touchStartXRef.current = null;
+              if (dx > 55) setCurrentIdx((i) => Math.max(0, i - 1));
+              else if (dx < -55) setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1));
+            }}
+          >
           {currentPage ? (
             <div className="m-auto shrink-0">
               <div
@@ -659,6 +660,7 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
               </button>
             )}
           </div>
+        </div>
         </div>
 
         {/* OCR & Smart Data Side Inspector */}
