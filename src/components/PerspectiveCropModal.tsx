@@ -3,6 +3,7 @@ import {
   Check,
   Eye,
   FileText,
+  Magnet,
   Maximize2,
   RotateCw,
   SlidersHorizontal,
@@ -14,11 +15,14 @@ import {
 import { DocumentPage, FULL_QUAD, NormalizedQuad, ScanFilterId } from '../types/filelens';
 import { SCAN_FILTERS } from '../data/seedData';
 import {
+  computeEdgeSnapMap,
   createA4CenteredQuad,
   detectQuadFromImageUrl,
   isFullQuad,
+  snapCornerToEdge,
   squareUpQuadToRectangle,
 } from '../utils/documentEdgeDetector';
+import { renderPageToDataUrl } from '../utils/pdfExport';
 
 interface PerspectiveCropModalProps {
   page: DocumentPage;
@@ -43,11 +47,45 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
   const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(page.rotation);
   const [brightness, setBrightness] = useState<number>(page.brightness ?? 1);
   const [contrast, setContrast] = useState<number>(page.contrast ?? 1);
-  const [activeTab, setActiveTab] = useState<'crop' | 'filter' | 'adjust'>('crop');
+  const [activeTab, setActiveTab] = useState<'crop' | 'preview' | 'filter' | 'adjust'>('crop');
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [compareOriginal, setCompareOriginal] = useState<boolean>(false);
+  const [snapEnabled, setSnapEnabled] = useState<boolean>(true);
+  const [snapMap, setSnapMap] = useState<{ map: Float32Array; size: number } | null>(null);
+  const [warpedPreviewUrl, setWarpedPreviewUrl] = useState<string | null>(null);
+  const [isRenderingPreview, setIsRenderingPreview] = useState<boolean>(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void computeEdgeSnapMap(page.imageUrl).then((m) => {
+      if (active) setSnapMap(m);
+    });
+    return () => {
+      active = false;
+    };
+  }, [page.imageUrl]);
+
+  useEffect(() => {
+    if (activeTab !== 'preview') return;
+    let active = true;
+    setIsRenderingPreview(true);
+    void renderPageToDataUrl(
+      { ...page, quad, filter, rotation, brightness, contrast },
+      null,
+      'balanced'
+    )
+      .then((res) => {
+        if (active) setWarpedPreviewUrl(res.dataUrl);
+      })
+      .finally(() => {
+        if (active) setIsRenderingPreview(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeTab, page, quad, filter, rotation, brightness, contrast]);
 
   // Auto-detect white A4 paper edges on open if page is currently uncropped
   useEffect(() => {
@@ -91,11 +129,14 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
 
     if (dragTarget.type === 'corner') {
       const k = dragTarget.key;
+      const snapped = snapEnabled ? snapCornerToEdge(snapMap, nx, ny) : { x: nx, y: ny };
+      const sx = snapped.x;
+      const sy = snapped.y;
       setQuad((prev) => {
-        if (k === 'tl') return { ...prev, tlX: Math.min(nx, prev.trX - 0.1), tlY: Math.min(ny, prev.blY - 0.1) };
-        if (k === 'tr') return { ...prev, trX: Math.max(nx, prev.tlX + 0.1), trY: Math.min(ny, prev.brY - 0.1) };
-        if (k === 'br') return { ...prev, brX: Math.max(nx, prev.blX + 0.1), brY: Math.max(ny, prev.trY + 0.1) };
-        return { ...prev, blX: Math.min(nx, prev.brX - 0.1), blY: Math.max(ny, prev.tlY + 0.1) };
+        if (k === 'tl') return { ...prev, tlX: Math.min(sx, prev.trX - 0.1), tlY: Math.min(sy, prev.blY - 0.1) };
+        if (k === 'tr') return { ...prev, trX: Math.max(sx, prev.tlX + 0.1), trY: Math.min(sy, prev.brY - 0.1) };
+        if (k === 'br') return { ...prev, brX: Math.max(sx, prev.blX + 0.1), brY: Math.max(sy, prev.trY + 0.1) };
+        return { ...prev, blX: Math.min(sx, prev.brX - 0.1), blY: Math.max(sy, prev.tlY + 0.1) };
       });
     } else {
       const dx = nx - dragTarget.startX;
@@ -277,25 +318,39 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
           ref={stageRef}
           className="relative max-w-full max-h-full aspect-[3/4] h-full flex items-center justify-center"
         >
-          <div
-            className="w-full h-full flex items-center justify-center transition-transform duration-200"
-            style={{ transform: `rotate(${rotation}deg)` }}
-          >
-            <img
-              src={page.imageUrl}
-              alt={`Page ${pageNumber} edit preview`}
-              referrerPolicy="no-referrer"
-              className={`w-full h-full object-contain ${
-                compareOriginal ? '' : `scan-filter-${filter}`
-              } rounded-sm`}
-              style={
-                compareOriginal
-                  ? undefined
-                  : { filter: `brightness(${brightness}) contrast(${contrast})` }
-              }
-              draggable={false}
-            />
-          </div>
+          {activeTab === 'preview' ? (
+            <div className="w-full h-full flex items-center justify-center">
+              {isRenderingPreview ? (
+                <div className="text-xs text-white/70 font-medium">Rectifying perspective &amp; enhancing…</div>
+              ) : warpedPreviewUrl ? (
+                <img
+                  src={warpedPreviewUrl}
+                  alt="Perspective rectified preview"
+                  className="max-w-full max-h-full object-contain rounded shadow-2xl"
+                />
+              ) : null}
+            </div>
+          ) : (
+            <div
+              className="w-full h-full flex items-center justify-center transition-transform duration-200"
+              style={{ transform: `rotate(${rotation}deg)` }}
+            >
+              <img
+                src={page.imageUrl}
+                alt={`Page ${pageNumber} edit preview`}
+                referrerPolicy="no-referrer"
+                className={`w-full h-full object-contain ${
+                  compareOriginal ? '' : `scan-filter-${filter}`
+                } rounded-sm`}
+                style={
+                  compareOriginal
+                    ? undefined
+                    : { filter: `brightness(${brightness}) contrast(${contrast})` }
+                }
+                draggable={false}
+              />
+            </div>
+          )}
 
           {/* Perspective Quad Overlay */}
           {activeTab === 'crop' && !compareOriginal && (
@@ -416,6 +471,18 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
               <span>Full</span>
             </button>
             <button
+              onClick={() => setSnapEnabled((s) => !s)}
+              className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                snapEnabled
+                  ? 'bg-orange-600/25 text-orange-300 border border-orange-500/40'
+                  : 'bg-white/10 text-white/70 hover:bg-white/15'
+              }`}
+              title="Magnetic edge snap"
+            >
+              <Magnet className="w-3.5 h-3.5" />
+              <span>Snap</span>
+            </button>
+            <button
               onClick={rotateRight}
               className="min-h-[38px] px-3.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold flex items-center gap-1.5 transition-colors"
             >
@@ -490,10 +557,11 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
         )}
 
         {/* Segmented Mode Switcher */}
-        <div className="max-w-sm mx-auto grid grid-cols-3 gap-1 p-1 rounded-xl bg-white/8">
+        <div className="max-w-md mx-auto grid grid-cols-4 gap-1 p-1 rounded-xl bg-white/8">
           {(
             [
               { id: 'crop', label: 'Crop' },
+              { id: 'preview', label: 'Preview' },
               { id: 'filter', label: 'Filters' },
               { id: 'adjust', label: 'Adjust' },
             ] as const

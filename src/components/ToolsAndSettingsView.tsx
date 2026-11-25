@@ -1,7 +1,12 @@
 import React, { useEffect, useId, useMemo, useState } from 'react';
 import {
+  ChevronLeft,
+  Copy,
   CopyCheck,
   Download,
+  FileText,
+  Folder,
+  FolderPlus,
   HardDrive,
   Image as ImageIcon,
   Layers,
@@ -13,6 +18,7 @@ import {
   Sun,
   Trash2,
   Upload,
+  Wifi,
 } from 'lucide-react';
 import {
   AppPreferences,
@@ -39,6 +45,10 @@ import {
   VisualBurstCluster,
 } from '../utils/storageAnalyzer';
 import { getBrowserStorageUsageBytes } from '../utils/vaultStorage';
+import {
+  AndroidNativeFileMeta,
+  materializeAndroidNativeFile,
+} from '../utils/deviceRoots';
 import { SmartIndexingBar } from './SmartIndexingBar';
 
 interface ToolsAndSettingsViewProps {
@@ -115,8 +125,47 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
   const [burstClusters, setBurstClusters] = useState<VisualBurstCluster[]>([]);
   const [isScanningBursts, setIsScanningBursts] = useState<boolean>(false);
   const [backupPassword, setBackupPassword] = useState<string>('');
+  const [lanUrl, setLanUrl] = useState<string>(() =>
+    typeof window !== 'undefined' && window.FileLensAndroid?.getLanServerUrl
+      ? window.FileLensAndroid.getLanServerUrl()
+      : ''
+  );
+  const [fmPath, setFmPath] = useState<string>('');
+  const [fmEntries, setFmEntries] = useState<
+    { name: string; path: string; isDirectory: boolean; size: number; lastModified: number }[]
+  >([]);
+  const [showFileManager, setShowFileManager] = useState<boolean>(false);
+  const [deviceVolumes, setDeviceVolumes] = useState<
+    { name: string; path: string; totalBytes: number; freeBytes: number }[]
+  >([]);
   const backupInputId = useId();
   const encryptedBackupInputId = useId();
+
+  const hasAndroidBridge =
+    typeof window !== 'undefined' && Boolean(window.FileLensAndroid?.listDirectory);
+
+  const loadFmDirectory = (targetPath: string) => {
+    if (!window.FileLensAndroid?.listDirectory) return;
+    try {
+      const raw = window.FileLensAndroid.listDirectory(targetPath);
+      const parsed = JSON.parse(raw || '[]');
+      setFmPath(targetPath);
+      setFmEntries(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setFmEntries([]);
+    }
+  };
+
+  useEffect(() => {
+    if (window.FileLensAndroid?.getDeviceStorageStats) {
+      try {
+        const parsed = JSON.parse(window.FileLensAndroid.getDeviceStorageStats() || '{}');
+        if (Array.isArray(parsed.volumes)) setDeviceVolumes(parsed.volumes);
+      } catch {
+        // Ignore
+      }
+    }
+  }, []);
 
   useEffect(() => {
     void getBrowserStorageUsageBytes().then((bytes) => setIndexedDbBytes(bytes));
@@ -868,6 +917,198 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               />
             </div>
           </section>
+
+          {/* Native Android File Manager, StatFs Storage & LAN Wi-Fi PC Explorer */}
+          {hasAndroidBridge && (
+            <section className="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-slate-200/80 dark:border-white/10 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Wifi className="w-4 h-4 text-sky-500" />
+                  <h2 className="text-sm font-bold">LAN PC Explorer &amp; Device File Manager</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (lanUrl) {
+                      window.FileLensAndroid?.stopLanServer?.();
+                      setLanUrl('');
+                      onToast('Stopped LAN Wi-Fi Explorer');
+                    } else {
+                      const url = window.FileLensAndroid?.startLanServer?.() || '';
+                      setLanUrl(url);
+                      if (url) onToast(`LAN Explorer live at ${url}`);
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
+                    lanUrl
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-sky-600 hover:bg-sky-700 text-white'
+                  }`}
+                >
+                  {lanUrl ? 'Stop Wi-Fi Server' : 'Start Wi-Fi Server'}
+                </button>
+              </div>
+
+              {lanUrl && (
+                <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900/50 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[11px] text-sky-700 dark:text-sky-300 font-semibold">
+                      Open on any PC browser (same Wi-Fi):
+                    </div>
+                    <div className="text-xs font-mono font-bold text-slate-900 dark:text-white truncate">
+                      {lanUrl}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(lanUrl).catch(() => undefined);
+                      onToast('Copied LAN Explorer URL');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#2C2C2E] text-xs font-semibold flex items-center gap-1 shrink-0"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+              )}
+
+              {deviceVolumes.length > 0 && (
+                <div className="space-y-2">
+                  {deviceVolumes.map((v) => {
+                    const used = Math.max(0, v.totalBytes - v.freeBytes);
+                    const pct = v.totalBytes > 0 ? Math.round((used / v.totalBytes) * 100) : 0;
+                    return (
+                      <div key={v.path} className="space-y-1 text-xs">
+                        <div className="flex justify-between font-medium">
+                          <span>{v.name}</span>
+                          <span className="font-mono text-[11px] text-slate-500">
+                            {formatBytes(used)} / {formatBytes(v.totalBytes)} ({pct}%)
+                          </span>
+                        </div>
+                        <div className="h-2 rounded-full bg-slate-100 dark:bg-[#2C2C2E] overflow-hidden">
+                          <div className="h-full bg-sky-500" style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showFileManager;
+                  setShowFileManager(next);
+                  if (next) loadFmDirectory(fmPath);
+                }}
+                className="w-full h-10 rounded-xl bg-slate-100 dark:bg-[#2C2C2E] hover:bg-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <Folder className="w-4 h-4 text-orange-600" />
+                <span>{showFileManager ? 'Hide Device File Browser' : 'Browse Internal & SD Card Files'}</span>
+              </button>
+
+              {showFileManager && (
+                <div className="rounded-xl border border-slate-200/80 dark:border-white/10 overflow-hidden">
+                  <div className="px-3 py-2 bg-slate-50 dark:bg-[#2C2C2E] flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {fmPath && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const parent = fmPath.includes('/')
+                              ? fmPath.slice(0, fmPath.lastIndexOf('/'))
+                              : '';
+                            loadFmDirectory(parent === '/storage' || parent === '/storage/emulated' ? '' : parent);
+                          }}
+                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10"
+                        >
+                          <ChevronLeft className="w-4 h-4" />
+                        </button>
+                      )}
+                      <span className="font-mono truncate text-[11px] text-slate-600 dark:text-slate-300">
+                        {fmPath || 'Storage Volumes'}
+                      </span>
+                    </div>
+                    {fmPath && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const name = window.prompt('New folder name:');
+                          if (name?.trim()) {
+                            window.FileLensAndroid?.createFolder?.(`${fmPath}/${name.trim()}`);
+                            loadFmDirectory(fmPath);
+                          }
+                        }}
+                        className="p-1 rounded hover:bg-slate-200 dark:hover:bg-white/10 text-orange-600"
+                        title="New Folder"
+                      >
+                        <FolderPlus className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-white/8">
+                    {fmEntries.map((entry) => (
+                      <div
+                        key={entry.path}
+                        className="px-3 py-2 flex items-center justify-between gap-2 text-xs hover:bg-slate-50 dark:hover:bg-white/[0.03]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (entry.isDirectory) {
+                              loadFmDirectory(entry.path);
+                            } else {
+                              const meta: AndroidNativeFileMeta = {
+                                name: entry.name,
+                                path: entry.path,
+                                size: entry.size,
+                                mime: '',
+                                lastModified: entry.lastModified,
+                              };
+                              const f = materializeAndroidNativeFile(meta);
+                              onIndexFiles([f], 'File Manager');
+                              onToast(`Indexing "${entry.name}"…`);
+                            }
+                          }}
+                          className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                        >
+                          {entry.isDirectory ? (
+                            <Folder className="w-4 h-4 text-orange-500 shrink-0" />
+                          ) : (
+                            <FileText className="w-4 h-4 text-sky-500 shrink-0" />
+                          )}
+                          <div className="min-w-0">
+                            <div className="font-medium truncate">{entry.name}</div>
+                            {!entry.isDirectory && (
+                              <div className="text-[10px] font-mono text-slate-400">
+                                {formatBytes(entry.size)} · Tap to index &amp; OCR
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                        {!entry.isDirectory && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.FileLensAndroid?.deleteNativeFile?.(entry.path)) {
+                                loadFmDirectory(fmPath);
+                                onToast(`Deleted ${entry.name}`);
+                              }
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-red-600 shrink-0"
+                            title="Delete file"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
         </div>
       </div>
     </div>

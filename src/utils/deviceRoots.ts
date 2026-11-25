@@ -41,6 +41,14 @@ export interface FileLensAndroidBridge {
   readFileBase64?: (path: string) => string;
   getAndroidApiLevel?: () => number;
   getStorageRootPath?: () => string;
+  getDeviceStorageStats?: () => string;
+  listDirectory?: (path: string) => string;
+  createFolder?: (path: string) => boolean;
+  renameFile?: (path: string, newName: string) => boolean;
+  deleteNativeFile?: (path: string) => boolean;
+  startLanServer?: () => string;
+  stopLanServer?: () => void;
+  getLanServerUrl?: () => string;
 }
 
 export interface AndroidNativeFileMeta {

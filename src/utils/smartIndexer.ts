@@ -411,29 +411,24 @@ async function parsePdfFile(
       .trim();
 
     const needsOcr = pageText.length < 12 && p <= 4;
-    let imgUrl = '';
+    const viewport = page.getViewport({ scale: needsOcr ? 1.25 : 0.85 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+    }
+    const imgUrl = canvas.toDataURL('image/jpeg', needsOcr ? 0.8 : 0.72);
 
-    // Only render canvas for page 1 (thumbnail) or scanned pages needing OCR
-    if (p === 1 || needsOcr) {
-      const viewport = page.getViewport({ scale: needsOcr ? 1.25 : 0.8 });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(viewport.width);
-      canvas.height = Math.round(viewport.height);
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        await page.render({ canvasContext: ctx, viewport, canvas }).promise;
-      }
-      imgUrl = canvas.toDataURL('image/jpeg', 0.78);
-
-      if (needsOcr) {
-        pageText = await runRealOcrOnImage(imgUrl, ocrLanguage);
-      }
+    if (needsOcr) {
+      pageText = await runRealOcrOnImage(imgUrl, ocrLanguage);
     }
 
     textParts.push(pageText);
     pages.push({
-      id: `pg-pdf-${Date.now()}-${p}`,
-      imageUrl: imgUrl || pages[0]?.imageUrl || '',
+      id: `pg-pdf-${Date.now()}-${++globalDocSeq}-${p}`,
+      imageUrl: imgUrl,
       rotation: 0,
       filter: defaultFilter,
       quad: FULL_QUAD,

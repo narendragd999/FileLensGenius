@@ -90,6 +90,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const [batchPace, setBatchPace] = useState<BatchAutoPace>(preferences.batchPace);
   const [flashOn, setFlashOn] = useState<boolean>(false);
   const [showGrid, setShowGrid] = useState<boolean>(true);
+  const [cameraZoom, setCameraZoom] = useState<1 | 2>(1);
+  const [focusPoint, setFocusPoint] = useState<{ x: number; y: number } | null>(null);
 
   // Real WebRTC camera states (zero dummy captures!)
   const [cameraStatus, setCameraStatus] = useState<'initializing' | 'live' | 'denied' | 'unavailable'>(
@@ -820,6 +822,18 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
               )}
               <button
                 type="button"
+                onClick={() => setCameraZoom((z) => (z === 1 ? 2 : 1))}
+                className={`min-h-[34px] px-2 rounded-full text-[11px] font-mono font-bold transition-colors ${
+                  cameraZoom === 2
+                    ? 'bg-orange-600 text-white'
+                    : 'bg-white/12 text-white/85 hover:bg-white/20'
+                }`}
+                title="Toggle 1x / 2x zoom"
+              >
+                {cameraZoom}x
+              </button>
+              <button
+                type="button"
                 onClick={handleSwitchCamera}
                 aria-label="Switch camera lens"
                 title="Switch camera"
@@ -842,15 +856,45 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         </div>
 
         {/* REAL Live Camera Viewfinder */}
-        <div className="relative flex-1 min-h-0 overflow-hidden flex items-center justify-center bg-[#0C0C0E]">
+        <div
+          className="relative flex-1 min-h-0 overflow-hidden flex items-center justify-center bg-[#0C0C0E]"
+          onClick={(e) => {
+            if (cameraStatus !== 'live') return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = ((e.clientX - rect.left) / rect.width) * 100;
+            const y = ((e.clientY - rect.top) / rect.height) * 100;
+            setFocusPoint({ x, y });
+            window.setTimeout(() => setFocusPoint(null), 900);
+          }}
+        >
           {/* Always mount <video> so srcObject attaches immediately when stream opens */}
           <video
             ref={videoRef}
             playsInline
             muted
             autoPlay
-            className={`w-full h-full object-cover ${cameraStatus === 'live' ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+            style={{ transform: `scale(${cameraZoom})` }}
+            className={`w-full h-full object-cover transition-transform duration-200 ${cameraStatus === 'live' ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           />
+
+          {/* Tap-to-Focus Reticle */}
+          {focusPoint && (
+            <div
+              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-16 h-16 rounded-lg border-2 border-orange-400 shadow-lg animate-ping"
+              style={{ left: `${focusPoint.x}%`, top: `${focusPoint.y}%` }}
+            />
+          )}
+
+          {/* 2-in-1 ID Card Alignment Guide */}
+          {cameraStatus === 'live' && scanMode === 'idcard' && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-8">
+              <div className="w-[min(86%,380px)] aspect-[1.586/1] rounded-2xl border-2 border-dashed border-orange-400/90 bg-orange-500/5 flex items-end justify-center pb-3">
+                <span className="px-3 py-1 rounded-full bg-black/70 text-[11px] font-bold tracking-wider text-orange-300 uppercase">
+                  {capturedPages.length === 0 ? 'Align Front Side' : 'Align Back Side'}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Initializing Spinner */}
           {cameraStatus === 'initializing' && (

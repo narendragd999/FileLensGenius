@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.StatFs;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.Settings;
@@ -45,6 +46,7 @@ public class MainActivity extends BridgeActivity {
     private final AtomicBoolean isCrawling = new AtomicBoolean(false);
     private final FileLensAndroidBridge androidBridge = new FileLensAndroidBridge();
     private boolean bridgeAttached = false;
+    private LanHttpServer lanServer = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -132,6 +134,130 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void cancelDeviceIndex() {
             cancelRequested.set(true);
+        }
+
+        @JavascriptInterface
+        public String getDeviceStorageStats() {
+            try {
+                List<File> roots = discoverAllStorageRoots();
+                long total = 0;
+                long free = 0;
+                JSONArray vols = new JSONArray();
+                for (File r : roots) {
+                    try {
+                        StatFs sf = new StatFs(r.getAbsolutePath());
+                        long vt = sf.getTotalBytes();
+                        long vf = sf.getAvailableBytes();
+                        total += vt;
+                        free += vf;
+                        JSONObject vo = new JSONObject();
+                        vo.put("name", r.getAbsolutePath().contains("emulated") ? "Internal Storage" : "SD Card (" + r.getName() + ")");
+                        vo.put("path", r.getAbsolutePath());
+                        vo.put("totalBytes", vt);
+                        vo.put("freeBytes", vf);
+                        vols.put(vo);
+                    } catch (Exception ignored) {
+                    }
+                }
+                JSONObject res = new JSONObject();
+                res.put("totalBytes", total);
+                res.put("freeBytes", free);
+                res.put("usedBytes", Math.max(0, total - free));
+                res.put("volumes", vols);
+                return res.toString();
+            } catch (Exception e) {
+                return "{}";
+            }
+        }
+
+        @JavascriptInterface
+        public String listDirectory(String path) {
+            try {
+                if (path == null || path.isEmpty()) {
+                    JSONArray arr = new JSONArray();
+                    for (File r : discoverAllStorageRoots()) {
+                        JSONObject o = new JSONObject();
+                        o.put("name", r.getAbsolutePath().contains("emulated") ? "Internal Storage" : "SD Card (" + r.getName() + ")");
+                        o.put("path", r.getAbsolutePath());
+                        o.put("isDirectory", true);
+                        o.put("size", 0);
+                        o.put("lastModified", r.lastModified());
+                        arr.put(o);
+                    }
+                    return arr.toString();
+                }
+                File dir = new File(path);
+                if (!dir.exists() || !dir.isDirectory()) return "[]";
+                File[] children = dir.listFiles();
+                if (children == null) return "[]";
+                Arrays.sort(children, (a, b) -> {
+                    if (a.isDirectory() != b.isDirectory()) return a.isDirectory() ? -1 : 1;
+                    return a.getName().compareToIgnoreCase(b.getName());
+                });
+                JSONArray arr = new JSONArray();
+                for (File f : children) {
+                    if (f.getName().startsWith(".")) continue;
+                    JSONObject o = new JSONObject();
+                    o.put("name", f.getName());
+                    o.put("path", f.getAbsolutePath());
+                    o.put("isDirectory", f.isDirectory());
+                    o.put("size", f.isDirectory() ? 0 : f.length());
+                    o.put("lastModified", f.lastModified());
+                    arr.put(o);
+                }
+                return arr.toString();
+            } catch (Exception e) {
+                return "[]";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean createFolder(String path) {
+            try {
+                return new File(path).mkdirs();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean renameFile(String path, String newName) {
+            try {
+                File f = new File(path);
+                File target = new File(f.getParentFile(), newName);
+                return f.renameTo(target);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean deleteNativeFile(String path) {
+            try {
+                return new File(path).delete();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String startLanServer() {
+            if (lanServer == null) {
+                lanServer = new LanHttpServer(discoverAllStorageRoots());
+            }
+            return lanServer.start();
+        }
+
+        @JavascriptInterface
+        public void stopLanServer() {
+            if (lanServer != null) {
+                lanServer.stop();
+            }
+        }
+
+        @JavascriptInterface
+        public String getLanServerUrl() {
+            return lanServer != null ? lanServer.getServerUrl() : "";
         }
 
         @JavascriptInterface
