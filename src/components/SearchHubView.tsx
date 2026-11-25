@@ -538,7 +538,45 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
           </div>
         )
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="space-y-3">
+          {documents.length > 0 && (
+            <section className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 p-3 sm:p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+                  Indexed Files ({documents.length})
+                </h2>
+                <span className="text-[11px] text-slate-400">Tap to open or type above to search</span>
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-white/8 max-h-72 overflow-y-auto">
+                {documents.slice(0, 20).map((doc) => (
+                  <button
+                    key={doc.id}
+                    type="button"
+                    onClick={() => onOpenDocumentAtPage(doc.id, 0)}
+                    className="w-full py-2 flex items-center justify-between gap-2.5 text-left hover:bg-slate-50 dark:hover:bg-white/[0.03] px-1 rounded-lg"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded bg-orange-600/12 text-orange-600 dark:text-orange-400 font-mono text-[10px] font-bold uppercase shrink-0">
+                          {doc.fileExtension ?? 'pdf'}
+                        </span>
+                        <span className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {doc.title}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 truncate font-mono mt-0.5">
+                        {doc.sourcePath || `${doc.pages.length}p`} · {formatBytes(doc.sizeBytes)}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
+                      {doc.ocrStatus === 'done' ? 'OCR' : 'Indexed'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <section className="bg-white dark:bg-[#1C1C1E] rounded-xl sm:rounded-2xl border border-slate-200/80 dark:border-white/10 p-3 sm:p-4 space-y-2">
             <h2 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
               Saved Searches
@@ -607,6 +645,7 @@ export const SearchHubView: React.FC<SearchHubViewProps> = ({
               </div>
             )}
           </section>
+          </div>
         </div>
       )}
     </div>

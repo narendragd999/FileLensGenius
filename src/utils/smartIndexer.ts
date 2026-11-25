@@ -34,6 +34,7 @@ const OCR_POOL_SIZE = 2;
 let ocrPool: Promise<Worker>[] = [];
 let ocrPoolLang = 'eng';
 let ocrPoolIndex = 0;
+let globalDocSeq = 0;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {
@@ -848,7 +849,7 @@ export async function runSmartIndexingPipeline(
     const nowIso = new Date().toISOString();
 
     const indexedDoc: ScanDocument = {
-      id: existingMatch?.id ?? `doc-idx-${Date.now()}-${fileIdx}`,
+      id: existingMatch?.id ?? `doc-idx-${Date.now()}-${++globalDocSeq}`,
       title: smartTitle,
       folderId: existingMatch?.folderId ?? folderId,
       tags: Array.from(

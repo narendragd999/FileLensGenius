@@ -93,7 +93,7 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   defaultFilter: 'magic',
   defaultPageSize: 'a4',
   defaultQuality: 'balanced',
-  autoCapture: true,
+  autoCapture: false,
   batchPace: 'wait_page',
   searchablePdfOcrLayer: true,
   namingTemplate: 'Scan_{YYYY}-{MM}-{DD}_{SEQ}',

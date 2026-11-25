@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   ChevronLeft,
@@ -86,6 +86,16 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
 
   const safeIdx = Math.max(0, Math.min(currentIdx, Math.max(0, doc.pages.length - 1)));
   const currentPage = doc.pages[safeIdx];
+  const touchStartXRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') setCurrentIdx((i) => Math.max(0, i - 1));
+      else if (e.key === 'ArrowRight') setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1));
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [doc.pages.length]);
 
   const matchingPageIndices = useMemo(() => {
     const q = findQuery.trim().toLowerCase();
@@ -416,7 +426,43 @@ export const PdfViewerModal: React.FC<PdfViewerModalProps> = ({
 
       {/* Main Viewer Canvas + Optional Side OCR Drawer */}
       <div className="flex-1 flex overflow-hidden relative">
-        <div className="flex-1 overflow-auto flex items-center justify-center p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F]">
+        <div
+          className="flex-1 overflow-auto flex items-center justify-center p-4 sm:p-8 bg-[#E5E5EA] dark:bg-[#0D0D0F] relative"
+          onTouchStart={(e) => {
+            if (e.touches.length === 1) touchStartXRef.current = e.touches[0].clientX;
+          }}
+          onTouchEnd={(e) => {
+            if (touchStartXRef.current === null || e.changedTouches.length === 0) return;
+            const dx = e.changedTouches[0].clientX - touchStartXRef.current;
+            touchStartXRef.current = null;
+            if (dx > 55) setCurrentIdx((i) => Math.max(0, i - 1));
+            else if (dx < -55) setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1));
+          }}
+        >
+          {/* Floating Page Indicator Pill */}
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-black/70 text-white text-xs font-mono font-semibold backdrop-blur-md shadow flex items-center gap-2 pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
+              disabled={safeIdx === 0}
+              aria-label="Previous page"
+              className="disabled:opacity-35 hover:text-orange-400"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span>
+              Page {safeIdx + 1} / {doc.pages.length}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentIdx((i) => Math.min(doc.pages.length - 1, i + 1))}
+              disabled={safeIdx >= doc.pages.length - 1}
+              aria-label="Next page"
+              className="disabled:opacity-35 hover:text-orange-400"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
           {currentPage ? (
             <div
               className="transition-transform duration-150 origin-center"

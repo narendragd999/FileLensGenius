@@ -1,7 +1,8 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Eye,
+  FileText,
   Maximize2,
   RotateCw,
   SlidersHorizontal,
@@ -13,7 +14,9 @@ import {
 import { DocumentPage, FULL_QUAD, NormalizedQuad, ScanFilterId } from '../types/filelens';
 import { SCAN_FILTERS } from '../data/seedData';
 import {
+  createA4CenteredQuad,
   detectQuadFromImageUrl,
+  isFullQuad,
   squareUpQuadToRectangle,
 } from '../utils/documentEdgeDetector';
 
@@ -45,6 +48,26 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [compareOriginal, setCompareOriginal] = useState<boolean>(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-detect white A4 paper edges on open if page is currently uncropped
+  useEffect(() => {
+    if (!isFullQuad(page.quad)) return;
+    let active = true;
+    setIsDetecting(true);
+    void detectQuadFromImageUrl(page.imageUrl)
+      .then((detected) => {
+        if (!active) return;
+        if (!isFullQuad(detected)) {
+          setQuad(detected);
+        }
+      })
+      .finally(() => {
+        if (active) setIsDetecting(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [page.imageUrl, page.quad]);
 
   const pushUndo = (prevQuad = quad, prevRot = rotation) => {
     setUndoStack((s) => [...s.slice(-19), { quad: prevQuad, rotation: prevRot }]);
@@ -123,6 +146,11 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
   const resetFullFrame = () => {
     pushUndo();
     setQuad(FULL_QUAD);
+  };
+
+  const applyA4Frame = () => {
+    pushUndo();
+    setQuad(createA4CenteredQuad());
   };
 
   const squareUpQuad = () => {
@@ -372,6 +400,13 @@ export const PerspectiveCropModal: React.FC<PerspectiveCropModalProps> = ({
             >
               <Square className="w-4 h-4 text-sky-400" />
               <span>Rect 90°</span>
+            </button>
+            <button
+              onClick={applyA4Frame}
+              className="min-h-[38px] px-3.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <FileText className="w-4 h-4 text-emerald-400" />
+              <span>A4 Fit</span>
             </button>
             <button
               onClick={resetFullFrame}

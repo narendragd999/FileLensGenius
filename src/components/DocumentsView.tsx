@@ -541,14 +541,15 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   </div>
 
                   <div className="mt-0.5 flex items-center gap-x-1.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                    {doc.fileExtension && doc.fileExtension !== 'pdf' && (
-                      <>
-                        <span className="font-mono uppercase font-semibold text-orange-600 dark:text-orange-400">
-                          {doc.fileExtension}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                      </>
-                    )}
+                    <span
+                      className={`px-1.5 py-0.2 rounded font-mono uppercase font-bold text-[10px] ${
+                        (doc.fileExtension ?? 'pdf') === 'pdf'
+                          ? 'bg-orange-600/12 text-orange-600 dark:text-orange-400'
+                          : 'bg-slate-200/80 dark:bg-white/10 text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {doc.fileExtension ?? 'pdf'}
+                    </span>
                     <span className="font-mono tabular-nums font-medium text-slate-700 dark:text-slate-300">
                       {doc.pages.length}p
                     </span>

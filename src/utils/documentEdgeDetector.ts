@@ -79,9 +79,9 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
   const data = imageData.data;
   const fingerprint = computeLumaFingerprint8x8(data, width, height);
 
-  // Sample border desk RGB color (outer 8% rim)
-  const marginX = Math.max(2, Math.floor(width * 0.08));
-  const marginY = Math.max(2, Math.floor(height * 0.08));
+  // Sample outer 6% corner patches for desk RGB color + center 40% for paper RGB
+  const cornerX = Math.max(2, Math.floor(width * 0.06));
+  const cornerY = Math.max(2, Math.floor(height * 0.06));
   let bR = 0;
   let bG = 0;
   let bB = 0;
@@ -98,7 +98,10 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
       const g = data[idx + 1];
       const b = data[idx + 2];
 
-      if (x < marginX || x >= width - marginX || y < marginY || y >= height - marginY) {
+      const inCorner =
+        (x < cornerX || x >= width - cornerX) &&
+        (y < cornerY || y >= height - cornerY);
+      if (inCorner) {
         bR += r;
         bG += g;
         bB += b;
@@ -125,14 +128,20 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
   const centerG = cG / Math.max(1, cCnt);
   const centerB = cB / Math.max(1, cCnt);
 
+  const borderLum = 0.299 * borderR + 0.587 * borderG + 0.114 * borderB;
+  const centerLum = 0.299 * centerR + 0.587 * centerG + 0.114 * centerB;
+  const centerChroma =
+    Math.max(centerR, centerG, centerB) - Math.min(centerR, centerG, centerB);
+  const isWhitePaperCenter =
+    centerLum > 142 && centerChroma < 55 && centerLum > borderLum + 8;
+
   const centerDeskDist = Math.hypot(centerR - borderR, centerG - borderG, centerB - borderB);
-  if (centerDeskDist < 22) {
-    // Low contrast scene (e.g. blank wall or full-frame paper already filling frame)
+  if (centerDeskDist < 12 && !isWhitePaperCenter) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
-  // Perceptual RGB distance mask separating foreground paper sheet from desk background
-  const distThresh = Math.max(18, centerDeskDist * 0.46);
+  // Dual-signal foreground paper mask: perceptual RGB distance OR white-paper luminance boost
+  const distThresh = Math.max(14, centerDeskDist * 0.42);
   const mask = new Uint8Array(width * height);
   let fgCount = 0;
 
@@ -140,8 +149,16 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
     const row = y * width;
     for (let x = 2; x < width - 2; x++) {
       const idx = (row + x) * 4;
-      const d = Math.hypot(data[idx] - borderR, data[idx + 1] - borderG, data[idx + 2] - borderB);
-      if (d >= distThresh) {
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const d = Math.hypot(r - borderR, g - borderG, b - borderB);
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      const isPaperPixel =
+        d >= distThresh ||
+        (isWhitePaperCenter && lum >= borderLum + 10 && lum > 140 && chroma < 58);
+      if (isPaperPixel) {
         mask[row + x] = 1;
         fgCount++;
       }
@@ -149,7 +166,7 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement): LiveFrameAnalysis
   }
 
   const areaRatio = fgCount / (width * height);
-  if (areaRatio < 0.14 || areaRatio > 0.92) {
+  if (areaRatio < 0.12 || areaRatio > 0.96) {
     return { quad: null, confidence: 0, fingerprint };
   }
 
@@ -250,6 +267,19 @@ export async function detectQuadFromImageUrl(imageUrl: string): Promise<Normaliz
     img.onerror = () => resolve(FULL_QUAD);
     img.src = imageUrl;
   });
+}
+
+export function createA4CenteredQuad(): NormalizedQuad {
+  return {
+    tlX: 0.06,
+    tlY: 0.04,
+    trX: 0.94,
+    trY: 0.04,
+    brX: 0.94,
+    brY: 0.96,
+    blX: 0.06,
+    blY: 0.96,
+  };
 }
 
 export function isFullQuad(q: NormalizedQuad, eps = 0.008): boolean {

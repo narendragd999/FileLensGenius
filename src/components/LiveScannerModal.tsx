@@ -86,7 +86,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
   const isAppendMode = Boolean(appendTargetTitle);
   const [phase, setPhase] = useState<'camera' | 'review'>('camera');
   const [scanMode, setScanMode] = useState<ScanMode>(isAppendMode ? 'batch' : initialMode);
-  const [autoCapture, setAutoCapture] = useState<boolean>(preferences.autoCapture);
+  const [autoCapture, setAutoCapture] = useState<boolean>(false);
   const [batchPace, setBatchPace] = useState<BatchAutoPace>(preferences.batchPace);
   const [flashOn, setFlashOn] = useState<boolean>(false);
   const [showGrid, setShowGrid] = useState<boolean>(true);
@@ -432,6 +432,15 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
       enrichPageWithRealOcr(pageId, capturedDataUrl);
 
+      // Auto-detect white A4 paper borders on captured photo if live tracker didn't lock yet
+      if (effectiveQuad === FULL_QUAD) {
+        void detectQuadFromImageUrl(capturedDataUrl).then((autoQuad) => {
+          setCapturedPages((prev) =>
+            prev.map((p) => (p.id === pageId ? { ...p, quad: autoQuad } : p))
+          );
+        });
+      }
+
       setTimeout(() => {
         captureLockRef.current = false;
       }, 450);
@@ -679,6 +688,9 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
             (qualityPreset === 'high' ? 620_000 : qualityPreset === 'compact' ? 210_000 : 390_000)
         ),
         searchableOcr,
+        fileExtension: 'pdf',
+        mimeType: 'application/pdf',
+        fileCategory: 'pdf',
         ocrStatus: combinedOcr.length > 0 ? 'done' : 'pending',
         indexedAt: new Date().toISOString(),
         chunksCount: Math.max(1, finalPages.length),
