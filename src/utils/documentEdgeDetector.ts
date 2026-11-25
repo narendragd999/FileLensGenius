@@ -623,7 +623,8 @@ function detectQuadCenterOutward(
   closedWhite: Float32Array,
   w: number,
   h: number,
-  centerPaperRef: number
+  centerPaperRef: number,
+  closedColorMatch: Float32Array | null = null
 ): [Pt, Pt, Pt, Pt] | null {
   const STRIPS = 26;
   const cx = Math.floor(w * 0.5);
@@ -645,8 +646,14 @@ function detectQuadCenterOutward(
       const inW = closedWhite[row + x + probe];
       const outW = closedWhite[row + x - probe];
       const stepW = inW - outW;
-      if (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) {
-        leftPts.push({ x, y, weight: Math.min(30, grad + stepW) });
+      const inC = closedColorMatch ? closedColorMatch[row + x + probe] : 0;
+      const outC = closedColorMatch ? closedColorMatch[row + x - probe] : 0;
+      const stepC = inC - outC;
+      if (
+        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+      ) {
+        leftPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
       }
     }
@@ -657,8 +664,14 @@ function detectQuadCenterOutward(
       const inW = closedWhite[row + x - probe];
       const outW = closedWhite[row + x + probe];
       const stepW = inW - outW;
-      if (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) {
-        rightPts.push({ x, y, weight: Math.min(30, grad + stepW) });
+      const inC = closedColorMatch ? closedColorMatch[row + x - probe] : 0;
+      const outC = closedColorMatch ? closedColorMatch[row + x + probe] : 0;
+      const stepC = inC - outC;
+      if (
+        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+      ) {
+        rightPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
       }
     }
@@ -673,8 +686,14 @@ function detectQuadCenterOutward(
       const inW = closedWhite[(y + probe) * w + x];
       const outW = closedWhite[(y - probe) * w + x];
       const stepW = inW - outW;
-      if (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) {
-        topPts.push({ x, y, weight: Math.min(30, grad + stepW) });
+      const inC = closedColorMatch ? closedColorMatch[(y + probe) * w + x] : 0;
+      const outC = closedColorMatch ? closedColorMatch[(y - probe) * w + x] : 0;
+      const stepC = inC - outC;
+      if (
+        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+      ) {
+        topPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
       }
     }
@@ -685,8 +704,14 @@ function detectQuadCenterOutward(
       const inW = closedWhite[(y - probe) * w + x];
       const outW = closedWhite[(y + probe) * w + x];
       const stepW = inW - outW;
-      if (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) {
-        bottomPts.push({ x, y, weight: Math.min(30, grad + stepW) });
+      const inC = closedColorMatch ? closedColorMatch[(y - probe) * w + x] : 0;
+      const outC = closedColorMatch ? closedColorMatch[(y + probe) * w + x] : 0;
+      const stepC = inC - outC;
+      if (
+        (inW >= centerPaperRef - 38 && ((grad >= 4 && stepW >= 7) || (grad >= 9 && stepW >= 4))) ||
+        (closedColorMatch !== null && inC >= 165 && stepC >= 24 && grad >= 2)
+      ) {
+        bottomPts.push({ x, y, weight: Math.min(30, grad + Math.max(stepW, stepC * 0.35)) });
         break;
       }
     }
@@ -816,6 +841,8 @@ function scoreQuadCandidate(
     let edgeHits = 0;
     let contrastSum = 0;
     let validSamples = 0;
+    let nonPaperEdgeSamples = 0;
+    const edgeDarkCutoff = Math.max(55, centerPaperRef - 38);
 
     for (let s = 1; s < SAMPLES; s++) {
       const t = s / SAMPLES;
@@ -837,21 +864,38 @@ function scoreQuadCandidate(
 
       const inX = Math.max(0, Math.min(w - 1, Math.round(px + nx * 5)));
       const inY = Math.max(0, Math.min(h - 1, Math.round(py + ny * 5)));
+      const inDeepX = Math.max(0, Math.min(w - 1, Math.round(px + nx * 11)));
+      const inDeepY = Math.max(0, Math.min(h - 1, Math.round(py + ny * 11)));
       const outX = Math.max(0, Math.min(w - 1, Math.round(px - nx * 5)));
       const outY = Math.max(0, Math.min(h - 1, Math.round(py - ny * 5)));
-      const stepW = closedWhite[inY * w + inX] - closedWhite[outY * w + outX];
+      const inWhite = closedWhite[inY * w + inX];
+      const inDeepWhite = closedWhite[inDeepY * w + inDeepX];
+      const stepW = inWhite - closedWhite[outY * w + outX];
+      const inColor = closedColorMatch ? closedColorMatch[inY * w + inX] : 255;
+      const inDeepColor = closedColorMatch ? closedColorMatch[inDeepY * w + inDeepX] : 255;
       const stepColor = closedColorMatch
-        ? closedColorMatch[inY * w + inX] - closedColorMatch[outY * w + outX]
+        ? inColor - closedColorMatch[outY * w + outX]
         : 0;
       const effectiveStep = Math.max(stepW, stepColor * 0.3);
 
-      if (localMaxGrad > 8 || stepW > 4 || stepColor > 18) edgeHits++;
-      if (effectiveStep > 0) contrastSum += Math.min(16, effectiveStep);
+      const isPaperInside =
+        Math.max(inWhite, inDeepWhite) >= edgeDarkCutoff &&
+        (!closedColorMatch || Math.max(inColor, inDeepColor) >= 145);
+
+      if (!isPaperInside) {
+        nonPaperEdgeSamples++;
+      } else {
+        if (localMaxGrad > 8 || stepW > 4 || stepColor > 18) edgeHits++;
+        if (effectiveStep > 0) contrastSum += Math.min(16, effectiveStep);
+      }
     }
 
     const hitRatio = validSamples > 0 ? edgeHits / validSamples : 0.4;
     const meanContrast = validSamples > 0 ? contrastSum / validSamples : 0;
-    const edgeScore = hitRatio * 0.72 + Math.min(1, meanContrast / 12) * 0.28;
+    let edgeScore = hitRatio * 0.72 + Math.min(1, meanContrast / 12) * 0.28;
+    if (validSamples > 0 && nonPaperEdgeSamples / validSamples > 0.35) {
+      edgeScore *= 0.45;
+    }
     if (edgeScore >= 0.35) strongEdges++;
     edgeSupportSum += edgeScore;
   }
@@ -1122,7 +1166,14 @@ export function analyzeCanvasFrame(canvas: HTMLCanvasElement, fastMode = false):
   );
 
   const candidates: { corners: [Pt, Pt, Pt, Pt]; bonus: number }[] = [];
-  const cOut = detectQuadCenterOutward(closedGray, closedWhite, width, height, centerPaperRef);
+  const cOut = detectQuadCenterOutward(
+    closedGray,
+    closedWhite,
+    width,
+    height,
+    centerPaperRef,
+    closedColorMatch
+  );
   if (cOut) candidates.push({ corners: cOut, bonus: 0.06 });
 
   for (const t of thresholds) {
