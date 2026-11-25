@@ -12,8 +12,33 @@ import {
 } from './embeddingEngine';
 import {
   getCrossLingualConceptVariants,
+  toUniversalSoundex,
   transliterateHinglishToHindi,
 } from './multilingualEngine';
+
+const docSoundexCache = new WeakMap<ScanDocument, Map<string, string[]>>();
+
+function getDocSoundexMap(doc: ScanDocument, fullText: string): Map<string, string[]> {
+  const cached = docSoundexCache.get(doc);
+  if (cached) return cached;
+  const map = new Map<string, string[]>();
+  const tokens = fullText.split(/[\s,.;:!?()[\]{}"'<>|/\\]+/);
+  for (const tok of tokens) {
+    if (tok.length < 3) continue;
+    const sdx = toUniversalSoundex(tok);
+    if (sdx.length < 3) continue;
+    let arr = map.get(sdx);
+    if (!arr) {
+      arr = [];
+      map.set(sdx, arr);
+    }
+    if (arr.length < 4 && !arr.includes(tok)) {
+      arr.push(tok);
+    }
+  }
+  docSoundexCache.set(doc, map);
+  return map;
+}
 
 export interface SearchMatchItem {
   doc: ScanDocument;
@@ -277,6 +302,22 @@ export function runDocumentSearch(
           totalMatches += count;
           score += isDirect ? 30 + count * 8 : 14 + count * 4;
           matchedTerms.push(term);
+        }
+      }
+
+      // Cross-script phonetic Soundex fallback (e.g. "Tulsidas" <-> "तुलसीदास")
+      if (totalMatches === 0) {
+        const sdxMap = getDocSoundexMap(doc, fullText);
+        for (const term of rawTerms) {
+          if (term.length < 4) continue;
+          const sdx = toUniversalSoundex(term);
+          if (sdx.length < 3) continue;
+          const hits = sdxMap.get(sdx);
+          if (hits && hits.length > 0) {
+            totalMatches += hits.length;
+            score += 22 + hits.length * 6;
+            for (const h of hits) matchedTerms.push(h);
+          }
         }
       }
     }
