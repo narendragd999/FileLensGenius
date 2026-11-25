@@ -14,8 +14,14 @@ import {
 } from '../types/filelens';
 import {
   classifyFileCategory,
+  extractTextWithNativeMlKit,
   isExtensionAllowedByFilters,
 } from './deviceRoots';
+import {
+  convertKrutiDevToUnicode,
+  isLikelyKrutiDev,
+  normalizeDevanagariOcrText,
+} from './krutiDevConverter';
 import { chunkDocumentPages } from './embeddingEngine';
 import {
   detectSmartTags,
@@ -110,10 +116,20 @@ export async function runRealOcrOnImage(
 ): Promise<string> {
   try {
     const prepared = await downscaleForOcr(imageSource, 1200);
+    // Fast native ML Kit OCR path on Android APK (<200ms)
+    const nativeText = extractTextWithNativeMlKit(prepared, ocrLanguage);
+    if (nativeText && nativeText.trim().length > 0) {
+      const normalized = normalizeDevanagariOcrText(nativeText);
+      return (isLikelyKrutiDev(normalized) ? convertKrutiDevToUnicode(normalized) : normalized)
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
     const recognizeTask = (async () => {
       const worker = await getOcrWorkerFromPool(ocrLanguage);
       const { data } = await worker.recognize(prepared);
-      return (data.text || '').replace(/\s+/g, ' ').trim();
+      const raw = (data.text || '').replace(/\s+/g, ' ').trim();
+      const normalized = normalizeDevanagariOcrText(raw);
+      return isLikelyKrutiDev(normalized) ? convertKrutiDevToUnicode(normalized) : normalized;
     })();
     return await withTimeout(recognizeTask, 10_000, '');
   } catch {
@@ -409,6 +425,9 @@ async function parsePdfFile(
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim();
+    if (isLikelyKrutiDev(pageText)) {
+      pageText = convertKrutiDevToUnicode(pageText);
+    }
 
     const needsOcr = pageText.length < 12 && p <= 4;
     const viewport = page.getViewport({ scale: needsOcr ? 1.25 : 0.85 });

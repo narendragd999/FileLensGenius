@@ -1,13 +1,17 @@
 package com.filelens.genius;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
@@ -20,10 +24,24 @@ import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebView;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.BridgeActivity;
+import com.google.android.gms.tasks.Tasks;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanner;
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions;
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning;
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -31,6 +49,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,11 +59,13 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends BridgeActivity {
 
     private final ExecutorService indexExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService scanExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private final AtomicBoolean isCrawling = new AtomicBoolean(false);
     private final FileLensAndroidBridge androidBridge = new FileLensAndroidBridge();
@@ -52,11 +73,129 @@ public class MainActivity extends BridgeActivity {
     private LanHttpServer lanServer = null;
     private SpeechRecognizer speechRecognizer = null;
     private String pendingVoiceLang = "en-US";
+    private String pendingShareJson = null;
+
+    private final ActivityResultLauncher<IntentSenderRequest> docScannerLauncher =
+        registerForActivityResult(new ActivityResultContracts.StartIntentSenderForResult(), result -> {
+            if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+                GmsDocumentScanningResult scanResult =
+                    GmsDocumentScanningResult.fromActivityResultIntent(result.getData());
+                if (scanResult != null && scanResult.getPages() != null && !scanResult.getPages().isEmpty()) {
+                    List<GmsDocumentScanningResult.Page> pages = scanResult.getPages();
+                    scanExecutor.execute(() -> {
+                        JSONArray arr = new JSONArray();
+                        for (GmsDocumentScanningResult.Page p : pages) {
+                            try (InputStream is = getContentResolver().openInputStream(p.getImageUri());
+                                 ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                                if (is == null) continue;
+                                byte[] buf = new byte[16384];
+                                int n;
+                                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+                                String dataUrl = "data:image/jpeg;base64," +
+                                    Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP);
+                                arr.put(dataUrl);
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        final String jsonArr = arr.toString();
+                        runOnUiThread(() -> {
+                            if (getBridge() == null || getBridge().getWebView() == null) return;
+                            getBridge().getWebView().evaluateJavascript(
+                                "window.dispatchEvent(new CustomEvent('filelens-google-scan-result',{detail:{pages:" + jsonArr + "}}));",
+                                null
+                            );
+                        });
+                    });
+                    return;
+                }
+            }
+            runOnUiThread(() -> {
+                if (getBridge() == null || getBridge().getWebView() == null) return;
+                getBridge().getWebView().evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('filelens-google-scan-result',{detail:{pages:[],cancelled:true}}));",
+                    null
+                );
+            });
+        });
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         attachJsBridge();
+        handleIncomingShareIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingShareIntent(intent);
+    }
+
+    private void handleIncomingShareIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
+        try {
+            JSONObject payload = new JSONObject();
+            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (text != null && !text.trim().isEmpty()) payload.put("text", text);
+            JSONArray filesArr = new JSONArray();
+            if (Intent.ACTION_SEND.equals(action)) {
+                Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (uri != null) {
+                    JSONObject item = readShareUri(uri);
+                    if (item != null) filesArr.put(item);
+                }
+            } else {
+                ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                if (uris != null) {
+                    for (Uri u : uris) {
+                        JSONObject item = readShareUri(u);
+                        if (item != null) filesArr.put(item);
+                    }
+                }
+            }
+            payload.put("files", filesArr);
+            if (payload.has("text") || filesArr.length() > 0) {
+                pendingShareJson = payload.toString();
+                if (getBridge() != null && getBridge().getWebView() != null) {
+                    final String safeJson = JSONObject.quote(pendingShareJson);
+                    getBridge().getWebView().post(() ->
+                        getBridge().getWebView().evaluateJavascript(
+                            "window.dispatchEvent(new CustomEvent('filelens-share-intent',{detail:JSON.parse(" + safeJson + ")}));",
+                            null
+                        )
+                    );
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private JSONObject readShareUri(Uri uri) {
+        try (InputStream is = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            if (is == null) return null;
+            byte[] buf = new byte[16384];
+            int n;
+            int total = 0;
+            while ((n = is.read(buf)) != -1 && total < 16 * 1024 * 1024) {
+                bos.write(buf, 0, n);
+                total += n;
+            }
+            String mime = getContentResolver().getType(uri);
+            if (mime == null) mime = "application/octet-stream";
+            String name = uri.getLastPathSegment();
+            if (name == null || name.trim().isEmpty()) name = "shared_file";
+            JSONObject obj = new JSONObject();
+            obj.put("name", name);
+            obj.put("mime", mime);
+            obj.put("base64", Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP));
+            return obj;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override
@@ -582,6 +721,104 @@ public class MainActivity extends BridgeActivity {
                     jsonStr + ",sourceLabel:" + safeLabel + ",totalFound:" + totalFound + ",sentCount:" + sentCount + "}}));";
                 getBridge().getWebView().evaluateJavascript(js, null);
             });
+        }
+
+        @JavascriptInterface
+        public String consumePendingShareIntent() {
+            String out = pendingShareJson;
+            pendingShareJson = null;
+            return out != null ? out : "";
+        }
+
+        @JavascriptInterface
+        public boolean launchGoogleDocScanner(String mode) {
+            try {
+                int pageLimit = "single".equals(mode) ? 1 : "id_2in1".equals(mode) ? 2 : 50;
+                GmsDocumentScannerOptions options = new GmsDocumentScannerOptions.Builder()
+                    .setGalleryImportAllowed(true)
+                    .setPageLimit(pageLimit)
+                    .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+                    .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+                    .build();
+                GmsDocumentScanner scanner = GmsDocumentScanning.getClient(options);
+                scanner.getStartScanIntent(MainActivity.this)
+                    .addOnSuccessListener(intentSender ->
+                        docScannerLauncher.launch(new IntentSenderRequest.Builder(intentSender).build())
+                    )
+                    .addOnFailureListener(e -> runOnUiThread(() -> {
+                        if (getBridge() != null && getBridge().getWebView() != null) {
+                            getBridge().getWebView().evaluateJavascript(
+                                "window.dispatchEvent(new CustomEvent('filelens-google-scan-result',{detail:{pages:[],error:" +
+                                    JSONObject.quote(e.getMessage() != null ? e.getMessage() : "Scanner unavailable") + "}}));",
+                                null
+                            );
+                        }
+                    }));
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String extractTextWithMlKit(String imageDataUrl, String lang) {
+            if (imageDataUrl == null || imageDataUrl.isEmpty()) return "";
+            try {
+                String b64 = imageDataUrl;
+                int comma = b64.indexOf(',');
+                if (comma >= 0) b64 = b64.substring(comma + 1);
+                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                if (bmp == null) return "";
+
+                InputImage image = InputImage.fromBitmap(bmp, 0);
+                boolean useDevanagari = lang != null && (lang.contains("hin") || lang.contains("hi") || lang.contains("dev"));
+                TextRecognizer primary = useDevanagari
+                    ? TextRecognition.getClient(new DevanagariTextRecognizerOptions.Builder().build())
+                    : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+
+                Text result = Tasks.await(primary.process(image), 12, TimeUnit.SECONDS);
+                String text = result != null && result.getText() != null ? result.getText().trim() : "";
+
+                if (text.isEmpty() && useDevanagari) {
+                    TextRecognizer fallback = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+                    Text fbRes = Tasks.await(fallback.process(image), 8, TimeUnit.SECONDS);
+                    if (fbRes != null && fbRes.getText() != null) text = fbRes.getText().trim();
+                }
+                bmp.recycle();
+                return text;
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean isBatteryOptimizationIgnored() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+            try {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+            } catch (Exception e) {
+                return true;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean requestIgnoreBatteryOptimizations() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+            try {
+                runOnUiThread(() -> {
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    } catch (Exception ignored) {
+                    }
+                });
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
         }
 
         private void dispatchComplete(String sourceLabel, int totalFound, int foldersScanned, boolean cancelled) {

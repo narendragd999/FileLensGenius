@@ -42,6 +42,7 @@ import {
   SMART_CARD_CATEGORIES,
 } from '../data/seedData';
 import { resolveNamingTemplate } from '../utils/formatters';
+import { launchNativeGoogleDocScanner } from '../utils/deviceRoots';
 import { composeTwoInOneA4IdCard, rectifyPageToStraightImage } from '../utils/pdfExport';
 import {
   analyzeCanvasFrame,
@@ -657,6 +658,38 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
     e.target.value = '';
   };
 
+  const hasGoogleScanner =
+    typeof window !== 'undefined' && typeof window.FileLensAndroid?.launchGoogleDocScanner === 'function';
+
+  const handleGoogleDocScanner = async () => {
+    const modeArg = scanMode === 'idcard' ? 'id_2in1' : scanMode === 'single' ? 'single' : 'batch';
+    const dataUrls = await launchNativeGoogleDocScanner(modeArg);
+    if (dataUrls.length === 0) return;
+
+    const newPages: DocumentPage[] = dataUrls.map((url, idx) => ({
+      id: `gscan-${Date.now()}-${idx}`,
+      imageUrl: url,
+      originalImageUrl: url,
+      originalQuad: FULL_QUAD,
+      quad: FULL_QUAD,
+      filter: activeFilter,
+      rotation: 0,
+      brightness: 0,
+      contrast: 0,
+      ocrText: '',
+      signatures: [],
+    }));
+
+    setCapturedPages((prev) => [...prev, ...newPages]);
+    newPages.forEach((p) => {
+      void enrichPageWithRealOcr(p.id, p.imageUrl);
+    });
+    onToast(`Google ML Scanner imported ${newPages.length} page${newPages.length > 1 ? 's' : ''}`);
+    if (scanMode === 'single' || (scanMode === 'idcard' && newPages.length >= 2)) {
+      setPhase('review');
+    }
+  };
+
   const handleSmartTitleSuggestion = async () => {
     if (capturedPages.length === 0) return;
     setIsSmartNaming(true);
@@ -877,6 +910,17 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
                   className="min-h-[34px] px-2.5 rounded-full text-[11px] font-semibold bg-white/12 text-white/85 hover:bg-white/20 transition-colors hidden sm:flex items-center"
                 >
                   {paceLabel}
+                </button>
+              )}
+              {hasGoogleScanner && (
+                <button
+                  type="button"
+                  onClick={() => void handleGoogleDocScanner()}
+                  className="min-h-[34px] px-2.5 rounded-full bg-orange-600 hover:bg-orange-500 text-white text-[11px] font-bold flex items-center gap-1 transition-colors shadow-sm"
+                  title="Launch Google ML Kit Pro Document Scanner"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  Pro AI
                 </button>
               )}
               <button

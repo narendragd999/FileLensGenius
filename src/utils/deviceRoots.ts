@@ -51,6 +51,11 @@ export interface FileLensAndroidBridge {
   getLanServerUrl?: () => string;
   startVoiceCapture?: (langCode: string) => boolean;
   stopVoiceCapture?: () => void;
+  launchGoogleDocScanner?: (mode: string) => boolean;
+  extractTextWithMlKit?: (imageDataUrl: string, lang: string) => string;
+  isBatteryOptimizationIgnored?: () => boolean;
+  requestIgnoreBatteryOptimizations?: () => boolean;
+  consumePendingShareIntent?: () => string;
 }
 
 export interface AndroidNativeFileMeta {
@@ -209,6 +214,37 @@ export function cancelAndroidNativeDeviceIndex(): void {
     }
   } catch {
     // Ignore bridge call failure
+  }
+}
+
+export function launchNativeGoogleDocScanner(mode: 'single' | 'batch' | 'id_2in1' = 'batch'): Promise<string[]> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof window.FileLensAndroid?.launchGoogleDocScanner !== 'function') {
+      resolve([]);
+      return;
+    }
+    const handler = (ev: Event) => {
+      window.removeEventListener('filelens-google-scan-result', handler);
+      const detail = (ev as CustomEvent<{ pages?: string[] }>).detail;
+      resolve(Array.isArray(detail?.pages) ? detail.pages : []);
+    };
+    window.addEventListener('filelens-google-scan-result', handler);
+    const launched = window.FileLensAndroid.launchGoogleDocScanner(mode);
+    if (!launched) {
+      window.removeEventListener('filelens-google-scan-result', handler);
+      resolve([]);
+    }
+  });
+}
+
+export function extractTextWithNativeMlKit(imageDataUrl: string, lang = 'eng+hin'): string {
+  if (typeof window === 'undefined' || typeof window.FileLensAndroid?.extractTextWithMlKit !== 'function') {
+    return '';
+  }
+  try {
+    return window.FileLensAndroid.extractTextWithMlKit(imageDataUrl, lang) || '';
+  } catch {
+    return '';
   }
 }
 

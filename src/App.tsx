@@ -643,6 +643,64 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [isVaultHydrated, runtime.hasNativeAndroidBridge]);
 
+  // Handle incoming Android ACTION_SEND / ACTION_SEND_MULTIPLE share intents (PDFs, images, WhatsApp text)
+  useEffect(() => {
+    if (!isVaultHydrated || !runtime.hasNativeAndroidBridge) return;
+    const processSharePayload = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object') return;
+      const payload = raw as {
+        text?: string;
+        files?: { name: string; mime: string; base64: string }[];
+      };
+      if (Array.isArray(payload.files) && payload.files.length > 0) {
+        const files: File[] = [];
+        for (const item of payload.files) {
+          try {
+            const bin = atob(item.base64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            files.push(new File([bytes], item.name || 'shared_file', { type: item.mime || 'application/octet-stream' }));
+          } catch {
+            // skip malformed attachment
+          }
+        }
+        if (files.length > 0) {
+          void handleIndexFiles(files, 'Shared Intent');
+          setActiveTab('documents');
+          showToast(`Imported ${files.length} shared file${files.length > 1 ? 's' : ''}`);
+        }
+      } else if (payload.text && payload.text.trim()) {
+        const text = payload.text.trim();
+        const note: VoiceNote = {
+          id: `vn-share-${Date.now()}`,
+          title: text.slice(0, 48) + (text.length > 48 ? '…' : ''),
+          transcript: text,
+          temporalClass: 'today',
+          recurrence: 'none',
+          languageCode: preferences.voiceLanguage || 'en-IN',
+          createdAt: new Date().toISOString(),
+          checklist: [{ id: `chk-${Date.now()}`, text, done: false }],
+        };
+        setVoiceNotes((prev) => [note, ...prev]);
+        setActiveTab('brain');
+        showToast('Saved shared text to Second Brain');
+      }
+    };
+
+    try {
+      const pendingRaw = window.FileLensAndroid?.consumePendingShareIntent?.();
+      if (pendingRaw) processSharePayload(JSON.parse(pendingRaw));
+    } catch {
+      // ignore invalid pending share payload
+    }
+
+    const onShareEvent = (ev: Event) => {
+      processSharePayload((ev as CustomEvent).detail);
+    };
+    window.addEventListener('filelens-share-intent', onShareEvent);
+    return () => window.removeEventListener('filelens-share-intent', onShareEvent);
+  }, [isVaultHydrated, runtime.hasNativeAndroidBridge]);
+
   const handleSyncAllDeviceRoots = async (filters: DeviceIndexFilters) => {
     const ready: { root: DeviceStorageRoot; handle: FileSystemDirectoryHandle }[] = [];
     for (const root of deviceRoots) {

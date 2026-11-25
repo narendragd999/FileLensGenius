@@ -748,6 +748,31 @@ export const ToolsAndSettingsView: React.FC<ToolsAndSettingsViewProps> = ({
               </div>
             </div>
 
+            {typeof window !== 'undefined' &&
+              typeof window.FileLensAndroid?.isBatteryOptimizationIgnored === 'function' && (
+                <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-[#2C2C2E] border border-slate-200 dark:border-white/10">
+                  <div>
+                    <div className="text-xs font-semibold">Unrestricted Background Indexing</div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {window.FileLensAndroid.isBatteryOptimizationIgnored()
+                        ? 'Battery optimization disabled — indexing runs smoothly'
+                        : 'Allow unrestricted battery so large OCR batches finish'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.FileLensAndroid?.requestIgnoreBatteryOptimizations?.();
+                      onToast('Opening battery optimization setting…');
+                    }}
+                    disabled={window.FileLensAndroid.isBatteryOptimizationIgnored()}
+                    className="px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:bg-emerald-600 disabled:opacity-90 text-white text-[11px] font-semibold shrink-0"
+                  >
+                    {window.FileLensAndroid.isBatteryOptimizationIgnored() ? 'Enabled' : 'Allow'}
+                  </button>
+                </div>
+              )}
+
             <div>
               <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
                 Automated Naming Template
