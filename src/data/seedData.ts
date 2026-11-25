@@ -99,7 +99,7 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   namingTemplate: 'Scan_{YYYY}-{MM}-{DD}_{SEQ}',
   voiceLanguage: 'en-US',
   privacyBlurCards: false,
-  ocrLanguage: 'eng+hin',
+  ocrLanguage: 'eng',
   awarenessBellEnabled: false,
   morningDigestEnabled: false,
   biometricCardsLock: false,
