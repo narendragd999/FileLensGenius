@@ -32,6 +32,15 @@ public final class DocAlignerDetector {
 
     private DocAlignerDetector() {}
 
+    public static void warmupAsync(final Context context) {
+        if (session != null || context == null) return;
+        new Thread(() -> {
+            try {
+                ensureLoaded(context.getApplicationContext());
+            } catch (Throwable ignored) {}
+        }, "DocAlignerWarmup").start();
+    }
+
     private static void ensureLoaded(Context context) throws Exception {
         if (session != null) return;
         synchronized (LOCK) {

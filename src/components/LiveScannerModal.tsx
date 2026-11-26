@@ -52,6 +52,7 @@ import {
   detectQuadFromImageUrl,
   isFullQuad,
 } from '../utils/documentEdgeDetector';
+import { isLowEndDevice } from '../utils/deviceTier';
 import { runRealOcrOnImage } from '../utils/smartIndexer';
 import {
   detectSmartTags,
@@ -232,14 +233,16 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
         return;
       }
 
+      const lowEnd = isLowEndDevice();
+      const targetW = lowEnd ? 1280 : 1920;
+      const targetH = lowEnd ? 720 : 1080;
       const constraintsToTry: MediaStreamConstraints[] = selectedDeviceId
         ? [
-            { video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false },
-            { video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+            { video: { deviceId: { exact: selectedDeviceId }, width: { ideal: targetW }, height: { ideal: targetH } }, audio: false },
+            { video: { deviceId: { exact: selectedDeviceId } }, audio: false },
           ]
         : [
-            { video: { facingMode: { ideal: facingMode }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false },
-            { video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+            { video: { facingMode: { ideal: facingMode }, width: { ideal: targetW }, height: { ideal: targetH } }, audio: false },
             { video: { facingMode: { ideal: facingMode } }, audio: false },
             { video: true, audio: false },
           ];
@@ -274,15 +277,6 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       }
 
       streamRef.current = stream;
-
-      // Enumerate all video input devices so user can switch lenses
-      try {
-        const allDevices = await navigator.mediaDevices.enumerateDevices();
-        const cams = allDevices.filter((d) => d.kind === 'videoinput');
-        if (!cancelled) setVideoDevices(cams);
-      } catch {
-        // Ignore enumerate errors
-      }
 
       const video = videoRef.current;
       if (video) {
@@ -319,6 +313,15 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
 
       if (!cancelled) {
         setCameraStatus('live');
+        // Enumerate video devices asynchronously AFTER preview is already live
+        void navigator.mediaDevices
+          .enumerateDevices()
+          .then((allDevices) => {
+            if (!cancelled) {
+              setVideoDevices(allDevices.filter((d) => d.kind === 'videoinput'));
+            }
+          })
+          .catch(() => undefined);
       }
     }
 
@@ -487,8 +490,8 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       setShutterFlash(true);
       setTimeout(() => setShutterFlash(false), 140);
 
-      // Capture full native video resolution (up to 2048px wide)
-      const maxDim = 2048;
+      // Capture native video resolution (1600px on low-end devices, up to 2048px on standard)
+      const maxDim = isLowEndDevice() ? 1600 : 2048;
       const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
       const outW = Math.round(video.videoWidth * scale);
       const outH = Math.round(video.videoHeight * scale);
@@ -633,10 +636,16 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       return;
     }
 
+    const lowEnd = isLowEndDevice();
+    const analysisW = lowEnd ? 192 : 240;
+    const analysisH = lowEnd ? 256 : 320;
+    const loopIntervalMs = lowEnd ? 240 : 160;
+    const neuralModulo = lowEnd ? 3 : 2;
+
     if (!analysisCanvasRef.current) {
       analysisCanvasRef.current = document.createElement('canvas');
-      analysisCanvasRef.current.width = 240;
-      analysisCanvasRef.current.height = 320;
+      analysisCanvasRef.current.width = analysisW;
+      analysisCanvasRef.current.height = analysisH;
     }
 
     let missedFrames = 0;
@@ -658,7 +667,10 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
       latestFpRef.current = analysis.fingerprint;
 
       frameTick++;
-      if (frameTick % 2 === 1 && typeof window.FileLensAndroid?.detectDocumentQuadNative === 'function') {
+      if (
+        frameTick % neuralModulo === 1 &&
+        typeof window.FileLensAndroid?.detectDocumentQuadNative === 'function'
+      ) {
         const neural = detectNeuralQuadFromCanvas(canvas);
         if (neural && neural.confidence >= 0.38) {
           lastNeuralResult = { quad: neural.quad, confidence: neural.confidence, ts: Date.now() };
@@ -770,7 +782,7 @@ export const LiveScannerModal: React.FC<LiveScannerModalProps> = ({
           lastQuadRef.current = null;
         }
       }
-    }, 200);
+    }, loopIntervalMs);
 
     return () => window.clearInterval(timer);
   }, [autoCapture, batchPace, cameraStatus, captureLiveVideoFrame, flashMode, phase]);

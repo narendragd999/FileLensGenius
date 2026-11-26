@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   Brain,
@@ -71,13 +71,27 @@ import {
   walkDeviceDirectoryHandle,
 } from './utils/deviceRoots';
 import { DocumentsView } from './components/DocumentsView';
-import { SearchHubView } from './components/SearchHubView';
-import { SecondBrainView } from './components/SecondBrainView';
-import { SmartCardsView } from './components/SmartCardsView';
-import { ToolsAndSettingsView } from './components/ToolsAndSettingsView';
-import { LiveScannerModal } from './components/LiveScannerModal';
-import { PageOrganizerModal } from './components/PageOrganizerModal';
-import { PdfViewerModal } from './components/PdfViewerModal';
+const SearchHubView = lazy(() =>
+  import('./components/SearchHubView').then((m) => ({ default: m.SearchHubView }))
+);
+const SecondBrainView = lazy(() =>
+  import('./components/SecondBrainView').then((m) => ({ default: m.SecondBrainView }))
+);
+const SmartCardsView = lazy(() =>
+  import('./components/SmartCardsView').then((m) => ({ default: m.SmartCardsView }))
+);
+const ToolsAndSettingsView = lazy(() =>
+  import('./components/ToolsAndSettingsView').then((m) => ({ default: m.ToolsAndSettingsView }))
+);
+const LiveScannerModal = lazy(() =>
+  import('./components/LiveScannerModal').then((m) => ({ default: m.LiveScannerModal }))
+);
+const PageOrganizerModal = lazy(() =>
+  import('./components/PageOrganizerModal').then((m) => ({ default: m.PageOrganizerModal }))
+);
+const PdfViewerModal = lazy(() =>
+  import('./components/PdfViewerModal').then((m) => ({ default: m.PdfViewerModal }))
+);
 import {
   DEVICE_DIR_INPUT_ID,
   DEVICE_FILES_INPUT_ID,
@@ -1231,6 +1245,13 @@ export default function App() {
               />
             )}
 
+            <Suspense
+              fallback={
+                <div className="py-12 flex items-center justify-center text-xs text-slate-400">
+                  Loading…
+                </div>
+              }
+            >
             {activeTab === 'search' && (
               <SearchHubView
                 documents={documents}
@@ -1428,6 +1449,7 @@ export default function App() {
                 onToast={showToast}
               />
             )}
+            </Suspense>
           </div>
         </main>
 
@@ -1478,6 +1500,7 @@ export default function App() {
       </div>
 
       {/* Live Document Scanner Studio */}
+      <Suspense fallback={null}>
       {scannerState.open && (
         <LiveScannerModal
           initialMode={scannerState.mode}
@@ -1554,6 +1577,7 @@ export default function App() {
           onToast={showToast}
         />
       )}
+      </Suspense>
 
       {/* Global Single-Button Native Pickers (guaranteed synchronous launch on Android, iOS, desktop & iframes) */}
       {!runtime.isMobile && (

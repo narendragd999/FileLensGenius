@@ -11,7 +11,7 @@ interface PageCanvasPreviewProps {
   blurContent?: boolean;
 }
 
-export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = ({
+export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = React.memo(({
   page,
   watermark,
   className = '',
@@ -145,4 +145,4 @@ export const PageCanvasPreview: React.FC<PageCanvasPreviewProps> = ({
       )}
     </div>
   );
-};
+});

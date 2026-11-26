@@ -154,6 +154,7 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         attachJsBridge();
+        DocAlignerDetector.warmupAsync(getApplicationContext());
         handleIncomingShareIntent(getIntent());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
