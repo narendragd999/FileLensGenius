@@ -32,6 +32,7 @@ import {
   suggestSmartDocumentTitle,
 } from './smartTaxonomy';
 import { detectQuadFromImageUrl } from './documentEdgeDetector';
+import { isLowEndDevice } from './deviceTier';
 import { formatBytes } from './formatters';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -108,6 +109,90 @@ async function downscaleForOcr(imageSource: string, maxDim = 1400): Promise<stri
     img.onerror = () => resolve(imageSource);
     img.src = imageSource;
   });
+}
+
+/**
+ * Fast blob-backed image downscale + ~1.5ms 160x160 text-stroke pre-filter.
+ * Avoids allocating huge base64 strings for camera photos and lets bulk DCIM
+ * indexing skip smooth/non-text photos (selfies, skies, bokeh) without OCR.
+ */
+async function prepareImageForIndexing(
+  file: File,
+  maxDim = 800
+): Promise<{ compactUrl: string; hasTextLikelihood: boolean }> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    return await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const srcW = img.naturalWidth || 1;
+          const srcH = img.naturalHeight || 1;
+          const scale = Math.min(1, maxDim / Math.max(srcW, srcH));
+          const w = Math.max(1, Math.round(srcW * scale));
+          const h = Math.max(1, Math.round(srcH * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            URL.revokeObjectURL(objectUrl);
+            void readFileAsDataUrl(file).then((u) => resolve({ compactUrl: u, hasTextLikelihood: true }));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          const compactUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+          // 160x160 local block high-contrast stroke check (~1.5ms)
+          const S = 160;
+          const probe = document.createElement('canvas');
+          probe.width = S;
+          probe.height = S;
+          const pCtx = probe.getContext('2d', { willReadFrequently: true });
+          let hasTextLikelihood = true;
+          if (pCtx) {
+            pCtx.drawImage(canvas, 0, 0, S, S);
+            const data = pCtx.getImageData(0, 0, S, S).data;
+            let denseBlocks = 0;
+            let mediumBlocks = 0;
+            for (let by = 0; by < S; by += 16) {
+              for (let bx = 0; bx < S; bx += 16) {
+                let transitions = 0;
+                for (let y = by; y < by + 16; y += 2) {
+                  const rowOffset = y * S * 4;
+                  for (let x = bx + 2; x < bx + 16; x += 2) {
+                    const p1 = rowOffset + x * 4;
+                    const p0 = rowOffset + (x - 2) * 4;
+                    const l1 = data[p1] * 0.3 + data[p1 + 1] * 0.59 + data[p1 + 2] * 0.11;
+                    const l0 = data[p0] * 0.3 + data[p0 + 1] * 0.59 + data[p0 + 2] * 0.11;
+                    if (Math.abs(l1 - l0) >= 24) transitions++;
+                  }
+                }
+                if (transitions >= 18) denseBlocks++;
+                if (transitions >= 10) mediumBlocks++;
+              }
+            }
+            hasTextLikelihood = denseBlocks >= 1 || mediumBlocks >= 3;
+          }
+
+          URL.revokeObjectURL(objectUrl);
+          resolve({ compactUrl, hasTextLikelihood });
+        } catch {
+          URL.revokeObjectURL(objectUrl);
+          void readFileAsDataUrl(file).then((u) => resolve({ compactUrl: u, hasTextLikelihood: true }));
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        void readFileAsDataUrl(file).then((u) => resolve({ compactUrl: u, hasTextLikelihood: true }));
+      };
+      img.src = objectUrl;
+    });
+  } catch {
+    URL.revokeObjectURL(objectUrl);
+    const compactUrl = await readFileAsDataUrl(file);
+    return { compactUrl, hasTextLikelihood: true };
+  }
 }
 
 export async function runRealOcrOnImage(
@@ -570,7 +655,8 @@ export async function runSmartIndexingPipeline(
   };
 
   let cursor = 0;
-  const CONCURRENCY = Math.min(3, Math.max(1, targetFiles.length));
+  const maxConcurrency = isLowEndDevice() ? 2 : 3;
+  const CONCURRENCY = Math.min(maxConcurrency, Math.max(1, targetFiles.length));
 
   const processSingleFile = async (file: File, fileIdx: number) => {
     if (signal?.aborted) return;
@@ -652,21 +738,26 @@ export async function runSmartIndexingPipeline(
         ];
       }
     } else if (category === 'image') {
-      const rawDataUrl = await readFileAsDataUrl(file);
-      const compactUrl = ext === 'svg' ? rawDataUrl : await downscaleForOcr(rawDataUrl, 800);
+      let compactUrl = '';
       let ocrText = '';
       let detectedQuad = FULL_QUAD;
 
       if (ext === 'svg') {
+        compactUrl = await readFileAsDataUrl(file);
         const svgRaw = await file.text();
         ocrText = stripXmlTags(svgRaw).slice(0, 12_000);
       } else {
-        const [extractedOcr, quad] = await Promise.all([
-          runRealOcrOnImage(compactUrl, ocrLanguage),
-          withTimeout(detectQuadFromImageUrl(compactUrl), 3000, FULL_QUAD),
-        ]);
-        ocrText = extractedOcr;
-        detectedQuad = quad;
+        const prepared = await prepareImageForIndexing(file, 800);
+        compactUrl = prepared.compactUrl;
+        const looksLikeDocName = /scan|doc|receipt|bill|invoice|note|screenshot|id|card/i.test(
+          file.name
+        );
+        if (prepared.hasTextLikelihood || looksLikeDocName) {
+          ocrText = await runRealOcrOnImage(compactUrl, ocrLanguage);
+          if (ocrText.trim().length >= 8) {
+            detectedQuad = await withTimeout(detectQuadFromImageUrl(compactUrl), 3000, FULL_QUAD);
+          }
+        }
       }
 
       combinedText = `${ocrText}\n${relPath}`.trim();
